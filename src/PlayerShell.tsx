@@ -8,6 +8,7 @@ import {
 } from "./runtime/runtimeAdapter";
 import { readValidatedJarResource } from "./jar/validateJar";
 import { validateJar, type JarReview } from "./validation/validateJar";
+import "./PlayerShell.css";
 
 const fixture = { id: "smoke-fixture", name: "Redistributable smoke fixture" };
 
@@ -78,7 +79,9 @@ function reduceRuntimeEvent(
 
 export function PlayerShell() {
   const frameContainer = useRef<HTMLDivElement>(null);
+  const phone = useRef<HTMLDivElement>(null);
   const adapter = useRef<CheerpJFrameRuntimeAdapter | null>(null);
+  const pressedKeys = useRef(new Set<string>());
   const validationAttempt = useRef(0);
   const [player, setPlayer] = useState<PlayerView>({
     state: "loading-runtime",
@@ -119,6 +122,10 @@ export function PlayerShell() {
       void launchMidlet(selectedGame, selectedGame.review.midlets[0]);
     }
   }, [player.state, runtimeAvailable, selectedGame]);
+
+  useEffect(() => {
+    if (player.state === "running") phone.current?.focus();
+  }, [player.state]);
 
   async function inspectSelectedJar(file: File | undefined): Promise<void> {
     if (!file) return;
@@ -184,46 +191,177 @@ export function PlayerShell() {
     await adapter.current?.launchMidlet(launch);
   }
 
+  function sendKey(code: string, pressed: boolean): boolean {
+    if (pressed) {
+      if (pressedKeys.current.has(code)) return true;
+      if (!adapter.current?.input(code, true)) return false;
+      pressedKeys.current.add(code);
+    } else {
+      if (!pressedKeys.current.delete(code)) return false;
+      adapter.current?.input(code, false);
+    }
+    return true;
+  }
+
+  function releasePressedKeys(): void {
+    pressedKeys.current.forEach((code) => adapter.current?.input(code, false));
+    pressedKeys.current.clear();
+  }
+
   return (
-    <main>
-      <h1>Handset</h1>
-      <p data-player-state={player.state} aria-live="polite">
-        {player.state.replace("-", " ")}
-      </p>
-      <section aria-labelledby="local-jar-heading">
-        <h2 id="local-jar-heading">Inspect a local game</h2>
-        <label>
-          Choose a Java ME JAR
-          <input
-            type="file"
-            accept=".jar,application/java-archive"
-            disabled={player.state === "validating"}
-            onChange={(event) => void inspectSelectedJar(event.currentTarget.files?.[0])}
-          />
-        </label>
-        <p>Your selected game stays in this browser and is not uploaded.</p>
-        {validationError && <p role="alert">{validationError}</p>}
-        {player.runtimeError && <p role="alert">{player.runtimeError}</p>}
-        {selectedGame && (
-          <JarMetadataReview
-            game={selectedGame}
-            state={player.state}
-            onLaunch={(midlet) => void launchMidlet(selectedGame, midlet)}
-          />
-        )}
+    <main className="player-shell">
+      <section className="player-copy" aria-labelledby="product-title">
+        <div>
+          <p className="eyebrow">Local Java ME player</p>
+          <h1 id="product-title">Handset</h1>
+          <p className="intro">
+            Bring back a game from your own collection. It stays on this
+            device, from inspection through play.
+          </p>
+        </div>
+
+        <section className="game-loader" aria-labelledby="local-jar-heading">
+          <div className="section-heading">
+            <div>
+              <p className="section-kicker">Game cartridge</p>
+              <h2 id="local-jar-heading">Choose a game</h2>
+            </div>
+            <span className="privacy-mark">On-device</span>
+          </div>
+          <label className="file-picker">
+            <span>Choose a Java ME JAR</span>
+            <input
+              type="file"
+              accept=".jar,application/java-archive"
+              disabled={player.state === "validating"}
+              onChange={(event) =>
+                void inspectSelectedJar(event.currentTarget.files?.[0])}
+            />
+          </label>
+          <p className="privacy-copy">
+            Your selected game stays in this browser and is not uploaded.
+          </p>
+          {validationError && <p className="alert" role="alert">{validationError}</p>}
+          {player.runtimeError && <p className="alert" role="alert">{player.runtimeError}</p>}
+          {selectedGame && (
+            <JarMetadataReview
+              game={selectedGame}
+              state={player.state}
+              onLaunch={(midlet) => void launchMidlet(selectedGame, midlet)}
+            />
+          )}
+          <button
+            className="fixture-launch"
+            type="button"
+            disabled={player.state !== "empty"}
+            onClick={() => void adapter.current?.launch(fixture)}
+          >
+            Launch fixture
+          </button>
+        </section>
+
+        <aside className="keyboard-legend" aria-label="Keyboard controls">
+          <p>Focus the phone, then play with your keyboard.</p>
+          <span><kbd>Q</kbd><kbd>W</kbd> soft keys</span>
+          <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> move</span>
+          <span><kbd>Enter</kbd> select</span>
+        </aside>
       </section>
-      <button
-        type="button"
-        disabled={player.state !== "empty"}
-        onClick={() => void adapter.current?.launch(fixture)}
-      >
-        Launch fixture
-      </button>
-      <section aria-label="Emulator display">
-        <p>{player.frameLabel}</p>
-        <div ref={frameContainer} />
+
+      <section className="phone-stage" aria-label="Emulator display">
+        <div
+          ref={phone}
+          className="phone"
+          role="application"
+          aria-label="Java ME phone player. Focus to use keyboard controls."
+          tabIndex={0}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            phone.current?.focus();
+          }}
+          onKeyDown={(event) => {
+            if (sendKey(event.code, true)) event.preventDefault();
+          }}
+          onKeyUp={(event) => {
+            if (sendKey(event.code, false)) event.preventDefault();
+          }}
+          onBlur={releasePressedKeys}
+        >
+          <div className="phone-cap">
+            <span className="earpiece" />
+            <span className="status-light" aria-hidden="true" />
+          </div>
+          <div className="screen-bezel">
+            <div className="screen-status">
+              <span
+                className={`state-indicator state-${player.state}`}
+                aria-hidden="true"
+              />
+              <span data-player-state={player.state} aria-live="polite">
+                {player.state.replace("-", " ")}
+              </span>
+              <span className="screen-clock" aria-hidden="true">J2ME</span>
+            </div>
+            <div className="runtime-viewport" ref={frameContainer}>
+              <p className="runtime-label">{player.frameLabel}</p>
+            </div>
+          </div>
+          <PhoneControls />
+          <div className="phone-foot" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+        </div>
       </section>
     </main>
+  );
+}
+
+function PhoneControls() {
+  const digitKeys = [
+    ["1", ""],
+    ["2", "ABC"],
+    ["3", "DEF"],
+    ["4", "GHI"],
+    ["5", "JKL"],
+    ["6", "MNO"],
+    ["7", "PQRS"],
+    ["8", "TUV"],
+    ["9", "WXYZ"],
+    ["*", "E"],
+    ["0", "+"],
+    ["#", "R"],
+  ] as const;
+
+  return (
+    <div className="phone-controls" data-phone-control aria-hidden="true">
+      <div className="soft-key-row">
+        <div className="hardware-key soft-key">
+          <span className="key-cap">Q</span>
+          <span className="key-function">Left</span>
+        </div>
+        <div className="navigation-key">
+          <span className="nav-up">↑</span>
+          <span className="nav-left">←</span>
+          <span className="nav-center">Enter</span>
+          <span className="nav-right">→</span>
+          <span className="nav-down">↓</span>
+        </div>
+        <div className="hardware-key soft-key">
+          <span className="key-cap">W</span>
+          <span className="key-function">Right</span>
+        </div>
+      </div>
+      <div className="number-pad">
+        {digitKeys.map(([digit, letters]) => (
+          <div className="hardware-key digit-key" key={digit}>
+            <span className="key-cap">{digit}</span>
+            {letters && <span className="key-function">{letters}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -247,7 +385,7 @@ function JarMetadataReview({
   ] as const;
 
   return (
-    <section aria-labelledby="jar-review-heading">
+    <section className="jar-review" aria-labelledby="jar-review-heading">
       <h2 id="jar-review-heading">Game details</h2>
       <dl>
         {suiteFields.map(([label, value]) => value && (

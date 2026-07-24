@@ -19,6 +19,7 @@ const sp = new URLSearchParams(location.search);
 const cheerpjWebRoot = '/app'+location.pathname.replace(/\/[^/]*$/,'');
 
 let isMobile = sp.get('mobile');
+const shellControls = sp.get('shellControls') === '1';
 
 let display = null;
 let screenCtx = null;
@@ -185,18 +186,18 @@ function setListeners() {
         e.preventDefault();
     });
 
-    document.addEventListener('mousedown', e => {
-        console.log('refocus');
-        setTimeout(() => display.focus(), 20);
-        ;
-    });
+    if (!shellControls) {
+        document.addEventListener('mousedown', () => {
+            console.log('refocus');
+            setTimeout(() => display.focus(), 20);
+        });
 
-    display.addEventListener('blur', e => {
-        console.log('refocus');
-        // it doesn't work without any timeout
-        setTimeout(() => display.focus(), 10);
-        ;
-    });
+        display.addEventListener('blur', () => {
+            console.log('refocus');
+            // it doesn't work without any timeout
+            setTimeout(() => display.focus(), 10);
+        });
+    }
 
     window.addEventListener('resize', autoscale);
 

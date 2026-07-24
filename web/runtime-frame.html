@@ -82,7 +82,7 @@
         document.querySelector("#fixture").hidden = false;
         engine.removeAttribute("aria-label");
         status.textContent = "Loading FreeJ2ME-Web and CheerpJ…";
-        engine.src = `/run.html?jar=runtime-smoke.jar&fractionScale=1&launch=${Date.now()}`;
+        engine.src = `/run.html?jar=runtime-smoke.jar&fractionScale=1&shellControls=1&launch=${Date.now()}`;
         engine.addEventListener("load", waitForRenderedLaunch, { once: true });
       };
 
@@ -102,6 +102,7 @@
           identity: midlet.identity,
           main: midlet.className,
           name: midlet.name,
+          shellControls: "1",
           launch: String(Date.now()),
         });
         engine.src = `/run.html?${query}`;

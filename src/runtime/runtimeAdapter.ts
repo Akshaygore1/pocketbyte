@@ -40,11 +40,37 @@ export interface RuntimeAdapter {
   launch(fixture: FixtureLaunch): Promise<void>;
   launchMidlet(midlet: MidletLaunch): Promise<void>;
   focus(): void;
-  input(code: string, pressed: boolean): void;
+  input(code: string, pressed: boolean): boolean;
   restart(): Promise<void>;
   diagnostics(): void;
   destroy(): void;
   subscribe(listener: (event: RuntimeLifecycleEvent) => void): () => void;
+}
+
+const PHYSICAL_KEY_MAP = new Map<string, string>([
+  ["ArrowUp", "ArrowUp"],
+  ["ArrowDown", "ArrowDown"],
+  ["ArrowLeft", "ArrowLeft"],
+  ["ArrowRight", "ArrowRight"],
+  ["Enter", "Enter"],
+  ["KeyQ", "KeyQ"],
+  ["KeyW", "KeyW"],
+  ["Digit0", "Digit0"],
+  ["Digit1", "Digit1"],
+  ["Digit2", "Digit2"],
+  ["Digit3", "Digit3"],
+  ["Digit4", "Digit4"],
+  ["Digit5", "Digit5"],
+  ["Digit6", "Digit6"],
+  ["Digit7", "Digit7"],
+  ["Digit8", "Digit8"],
+  ["Digit9", "Digit9"],
+  ["KeyE", "KeyE"],
+  ["KeyR", "KeyR"],
+]);
+
+export function translatePhysicalKey(code: string): string | null {
+  return PHYSICAL_KEY_MAP.get(code) ?? null;
 }
 
 const SHELL_SOURCE = "handset-shell";
@@ -156,8 +182,11 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     this.command({ type: "focus" });
   }
 
-  input(code: string, pressed: boolean): void {
-    this.command({ type: "input", code, pressed });
+  input(code: string, pressed: boolean): boolean {
+    const translatedCode = translatePhysicalKey(code);
+    if (!translatedCode) return false;
+    this.command({ type: "input", code: translatedCode, pressed });
+    return true;
   }
 
   async restart(): Promise<void> {
