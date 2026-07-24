@@ -364,6 +364,12 @@ async function init() {
             await loader.setAppId(appId);
             const settings = await new HashMap();
             await settings.put("main", className);
+            const requestedWidth = sp.get("width");
+            const requestedHeight = sp.get("height");
+            if (requestedWidth && requestedHeight) {
+                await settings.put("width", requestedWidth);
+                await settings.put("height", requestedHeight);
+            }
             await LauncherUtil.initApp(jarFile, loader, settings, null, null);
             args = ['app', appId];
         } else if (sp.get('app')) {

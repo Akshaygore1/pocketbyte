@@ -32,6 +32,12 @@ export interface MidletLaunch {
   name: string;
   className: string;
   jarBytes: Uint8Array;
+  resolution: LogicalResolution;
+}
+
+export interface LogicalResolution {
+  width: number;
+  height: number;
 }
 
 export interface RuntimeAdapter {
@@ -41,7 +47,7 @@ export interface RuntimeAdapter {
   launchMidlet(midlet: MidletLaunch): Promise<void>;
   focus(): void;
   input(code: string, pressed: boolean): boolean;
-  restart(): Promise<void>;
+  restart(resolution?: LogicalResolution): Promise<void>;
   diagnostics(): void;
   destroy(): void;
   subscribe(listener: (event: RuntimeLifecycleEvent) => void): () => void;
@@ -133,10 +139,13 @@ function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
 
 export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
   #frame: HTMLIFrameElement | null = null;
+  #container: HTMLElement | null = null;
   #session: string | null = null;
   #destroyed = false;
   #listeners = new Set<(event: RuntimeLifecycleEvent) => void>();
   #lastFixture: FixtureLaunch | null = null;
+  #lastMidlet: MidletLaunch | null = null;
+  #restartPending = false;
   readonly #frameFactory: RuntimeFrameFactory;
   readonly #onMessage = (message: MessageEvent) => this.receive(message);
 
@@ -153,6 +162,15 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
       throw new Error("A runtime adapter can only be mounted once");
     }
 
+    this.#container = container;
+    this.createFrame();
+    window.addEventListener("message", this.#onMessage);
+    this.emit({ type: "diagnostics", message: "Runtime frame mounted" });
+  }
+
+  private createFrame(): void {
+    if (!this.#container || this.#destroyed) return;
+
     this.#session = crypto.randomUUID();
     const frame = this.#frameFactory.create();
     frame.title = "Java ME runtime";
@@ -161,19 +179,19 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
       once: true,
     });
     this.#frame = frame;
-    window.addEventListener("message", this.#onMessage);
-    container.append(frame);
-    this.emit({ type: "diagnostics", message: "Runtime frame mounted" });
+    this.#container.append(frame);
   }
 
   async launch(fixture: FixtureLaunch): Promise<void> {
     this.#lastFixture = fixture;
+    this.#lastMidlet = null;
     this.emit({ type: "launching", fixtureName: fixture.name });
     this.command({ type: "launch", fixture });
   }
 
   async launchMidlet(midlet: MidletLaunch): Promise<void> {
-    this.#lastFixture = { id: midlet.identity, name: midlet.name };
+    this.#lastFixture = null;
+    this.#lastMidlet = midlet;
     this.emit({ type: "runtime-loading", fixtureName: midlet.name });
     this.command({ type: "launch-midlet", midlet });
   }
@@ -189,10 +207,20 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     return true;
   }
 
-  async restart(): Promise<void> {
-    if (!this.#lastFixture) return;
-    this.emit({ type: "restarting", fixtureName: this.#lastFixture.name });
-    this.command({ type: "restart" });
+  async restart(resolution?: LogicalResolution): Promise<void> {
+    const launchName = this.#lastMidlet?.name ?? this.#lastFixture?.name;
+    if (!launchName) return;
+
+    if (this.#lastMidlet && resolution) {
+      this.#lastMidlet = { ...this.#lastMidlet, resolution };
+    }
+
+    this.emit({ type: "restarting", fixtureName: launchName });
+    this.#restartPending = true;
+    this.command({ type: "teardown" });
+    this.#frame?.remove();
+    this.#frame = null;
+    this.createFrame();
   }
 
   diagnostics(): void {
@@ -206,6 +234,8 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     window.removeEventListener("message", this.#onMessage);
     this.#frame?.remove();
     this.#frame = null;
+    this.#container = null;
+    this.#restartPending = false;
     this.emit({ type: "teardown" });
   }
 
@@ -226,7 +256,17 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     }
 
     const event = parseFrameEvent(message.data);
-    if (event) this.emit(event);
+    if (!event) return;
+
+    this.emit(event);
+    if (event.type === "runtime-ready" && this.#restartPending) {
+      this.#restartPending = false;
+      if (this.#lastMidlet) {
+        this.command({ type: "launch-midlet", midlet: this.#lastMidlet });
+      } else if (this.#lastFixture) {
+        this.command({ type: "launch", fixture: this.#lastFixture });
+      }
+    }
   }
 
   private command(command: FrameCommandDetails): void {

@@ -102,6 +102,9 @@
           identity: midlet.identity,
           main: midlet.className,
           name: midlet.name,
+          width: String(midlet.resolution.width),
+          height: String(midlet.resolution.height),
+          fractionScale: "1",
           shellControls: "1",
           launch: String(Date.now()),
         });
@@ -140,6 +143,8 @@
           && typeof command.midlet.identity === "string"
           && typeof command.midlet.name === "string"
           && typeof command.midlet.className === "string"
+          && Number.isInteger(command.midlet.resolution?.width)
+          && Number.isInteger(command.midlet.resolution?.height)
         ) {
           post("runtime-loading", { fixtureName: command.midlet.name });
           launchMidlet(command.midlet);

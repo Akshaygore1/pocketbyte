@@ -2,15 +2,29 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   CheerpJFrameRuntimeAdapter,
+  type LogicalResolution,
   type MidletLaunch,
   type PlayerLifecycleState,
   type RuntimeLifecycleEvent,
 } from "./runtime/runtimeAdapter";
 import { readValidatedJarResource } from "./jar/validateJar";
+import {
+  readGameResolution,
+  writeGameResolution,
+} from "./storage/resolutionStorage";
 import { validateJar, type JarReview } from "./validation/validateJar";
 import "./PlayerShell.css";
 
 const fixture = { id: "smoke-fixture", name: "Redistributable smoke fixture" };
+const RESOLUTION_PRESETS = [
+  { width: 128, height: 160 },
+  { width: 176, height: 208 },
+  { width: 240, height: 320 },
+  { width: 320, height: 240 },
+  { width: 360, height: 640 },
+  { width: 480, height: 800 },
+] as const satisfies readonly LogicalResolution[];
+const DEFAULT_RESOLUTION: LogicalResolution = RESOLUTION_PRESETS[5];
 
 interface PlayerView {
   state: PlayerLifecycleState;
@@ -91,6 +105,8 @@ export function PlayerShell() {
   const [selectedGame, setSelectedGame] = useState<SelectedGame | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
+  const [resolution, setResolution] =
+    useState<LogicalResolution>(DEFAULT_RESOLUTION);
 
   useEffect(() => {
     const runtime = new CheerpJFrameRuntimeAdapter();
@@ -169,6 +185,17 @@ export function PlayerShell() {
       review: result.metadata,
       iconUrls: createMidletIconUrls(bytes, result.metadata),
     };
+    const rememberedResolution = readGameResolution(
+      game.identity,
+      DEFAULT_RESOLUTION,
+    );
+    setResolution(
+      RESOLUTION_PRESETS.find(
+        (preset) =>
+          preset.width === rememberedResolution.width
+          && preset.height === rememberedResolution.height,
+      ) ?? DEFAULT_RESOLUTION,
+    );
     setSelectedGame(game);
     setPlayer((current) => ({
       ...current,
@@ -187,8 +214,37 @@ export function PlayerShell() {
       name: midlet.name,
       className: midlet.className,
       jarBytes: game.bytes,
+      resolution,
     };
+    writeGameResolution(game.identity, resolution);
     await adapter.current?.launchMidlet(launch);
+  }
+
+  function changeResolution(value: string): void {
+    const next = RESOLUTION_PRESETS.find(
+      (preset) => resolutionValue(preset) === value,
+    );
+    if (!next || !selectedGame) return;
+
+    const activeGame = player.state === "running";
+    if (
+      activeGame
+      && !window.confirm(
+        "Changing resolution restarts the emulator. Unsaved progress since "
+          + "the game's last save may be lost. Continue?",
+      )
+    ) {
+      return;
+    }
+
+    const selected = { ...next };
+    setResolution(selected);
+    writeGameResolution(selectedGame.identity, selected);
+
+    if (activeGame) {
+      releasePressedKeys();
+      void adapter.current?.restart(selected);
+    }
   }
 
   function sendKey(code: string, pressed: boolean): boolean {
@@ -244,11 +300,22 @@ export function PlayerShell() {
           {validationError && <p className="alert" role="alert">{validationError}</p>}
           {player.runtimeError && <p className="alert" role="alert">{player.runtimeError}</p>}
           {selectedGame && (
-            <JarMetadataReview
-              game={selectedGame}
-              state={player.state}
-              onLaunch={(midlet) => void launchMidlet(selectedGame, midlet)}
-            />
+            <>
+              <ResolutionControl
+                resolution={resolution}
+                disabled={[
+                  "loading-runtime",
+                  "launching",
+                  "restarting",
+                ].includes(player.state)}
+                onChange={changeResolution}
+              />
+              <JarMetadataReview
+                game={selectedGame}
+                state={player.state}
+                onLaunch={(midlet) => void launchMidlet(selectedGame, midlet)}
+              />
+            </>
           )}
           <button
             className="fixture-launch"
@@ -315,6 +382,35 @@ export function PlayerShell() {
         </div>
       </section>
     </main>
+  );
+}
+
+function ResolutionControl({
+  resolution,
+  disabled,
+  onChange,
+}: {
+  resolution: LogicalResolution;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="resolution-control">
+      <label htmlFor="game-resolution">Game resolution</label>
+      <select
+        id="game-resolution"
+        value={resolutionValue(resolution)}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+      >
+        {RESOLUTION_PRESETS.map((preset) => (
+          <option key={resolutionValue(preset)} value={resolutionValue(preset)}>
+            {preset.width}×{preset.height}
+          </option>
+        ))}
+      </select>
+      <p>Logical pixels. Display scaling keeps the original proportions.</p>
+    </div>
   );
 }
 
@@ -461,6 +557,10 @@ function iconMimeType(path: string): string {
   if (extension === "gif") return "image/gif";
   if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
   return "image/png";
+}
+
+function resolutionValue(resolution: LogicalResolution): string {
+  return `${resolution.width}x${resolution.height}`;
 }
 
 function failureStageLabel(stage: string): string {

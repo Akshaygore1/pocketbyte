@@ -19,7 +19,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -154,6 +155,48 @@ h1 {
 .fixture-launch:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+.resolution-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #303a3e;
+}
+
+.resolution-control label {
+  color: #d4dadd;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.resolution-control select {
+  min-width: 8.2rem;
+  color: #e8ecee;
+  border: 1px solid #4a555a;
+  border-radius: 0.4rem;
+  background: #11181b;
+  padding: 0.4rem 0.55rem;
+}
+
+.resolution-control select:focus-visible {
+  outline: 2px solid #d9a94f;
+  outline-offset: 2px;
+}
+
+.resolution-control select:disabled {
+  opacity: 0.55;
+}
+
+.resolution-control p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #77858a;
+  font-size: 0.68rem;
+  line-height: 1.4;
 }
 
 .keyboard-legend {
