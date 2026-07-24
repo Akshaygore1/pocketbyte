@@ -37,10 +37,15 @@
         const startedAt = Date.now();
         readinessTimer = setInterval(() => {
           const canvas = engine.contentDocument?.querySelector("#display");
+          const pixel = canvas?.getContext("2d")?.getImageData(0, 0, 1, 1).data;
           const rendered = canvas?.localName === "canvas"
             && canvas.style.display !== "none"
             && canvas.width > 0
-            && canvas.height > 0;
+            && canvas.height > 0
+            && pixel?.[0] === 0x17
+            && pixel?.[1] === 0x30
+            && pixel?.[2] === 0x4a
+            && pixel?.[3] === 0xff;
 
           if (rendered) {
             stopReadinessCheck();

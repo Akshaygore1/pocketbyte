@@ -18,7 +18,11 @@ test("a redistributable fixture reaches its rendered runtime frame", async ({ pa
   await expect(runtime.contentFrame().getByText("Redistributable smoke fixture")).toBeVisible();
   const engine = runtime.contentFrame().getByLabel("Redistributable smoke fixture rendered");
   await expect(engine).toBeVisible();
-  await expect(engine.contentFrame().locator("canvas#display")).toBeVisible();
+  const display = engine.contentFrame().locator("canvas#display");
+  await expect(display).toBeVisible();
+  await expect.poll(async () => display.evaluate((canvas: HTMLCanvasElement) =>
+    Array.from(canvas.getContext("2d")!.getImageData(0, 0, 1, 1).data),
+  )).toEqual([0x17, 0x30, 0x4a, 0xff]);
 });
 
 test("a local JAR is validated and displayed for review", async ({ page }) => {
