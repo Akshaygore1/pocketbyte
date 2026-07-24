@@ -15,6 +15,7 @@ export interface FixtureLaunch {
 
 export type RuntimeLifecycleEvent =
   | { type: "runtime-ready" }
+  | { type: "runtime-loading"; fixtureName: string }
   | { type: "launching"; fixtureName: string }
   | { type: "running"; fixtureName: string }
   | { type: "restarting"; fixtureName: string }
@@ -26,10 +27,18 @@ export interface RuntimeFrameFactory {
   create(): HTMLIFrameElement;
 }
 
+export interface MidletLaunch {
+  identity: string;
+  name: string;
+  className: string;
+  jarBytes: Uint8Array;
+}
+
 export interface RuntimeAdapter {
   readonly session: string | null;
   mount(container: HTMLElement): void;
   launch(fixture: FixtureLaunch): Promise<void>;
+  launchMidlet(midlet: MidletLaunch): Promise<void>;
   focus(): void;
   input(code: string, pressed: boolean): void;
   restart(): Promise<void>;
@@ -44,6 +53,7 @@ const FRAME_SOURCE = "freej2me-runtime-frame";
 type FrameCommandDetails =
   | { type: "initialize" }
   | { type: "launch"; fixture: FixtureLaunch }
+  | { type: "launch-midlet"; midlet: MidletLaunch }
   | { type: "focus" }
   | { type: "input"; code: string; pressed: boolean }
   | { type: "restart" }
@@ -76,6 +86,10 @@ function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
     case "restarting": {
       const fixtureName = stringField(value, "fixtureName");
       return fixtureName ? { type: value.type, fixtureName } : null;
+    }
+    case "runtime-loading": {
+      const fixtureName = stringField(value, "fixtureName");
+      return fixtureName ? { type: "runtime-loading", fixtureName } : null;
     }
     case "failed": {
       const stage = stringField(value, "stage");
@@ -130,6 +144,12 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     this.#lastFixture = fixture;
     this.emit({ type: "launching", fixtureName: fixture.name });
     this.command({ type: "launch", fixture });
+  }
+
+  async launchMidlet(midlet: MidletLaunch): Promise<void> {
+    this.#lastFixture = { id: midlet.identity, name: midlet.name };
+    this.emit({ type: "runtime-loading", fixtureName: midlet.name });
+    this.command({ type: "launch-midlet", midlet });
   }
 
   focus(): void {

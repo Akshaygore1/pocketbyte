@@ -184,6 +184,25 @@ export async function validateJarBytes(
   };
 }
 
+/**
+ * Reads one resource after the containing JAR has passed validation. Manifest
+ * resource paths may start with a slash even though ZIP entry names do not.
+ */
+export function readValidatedJarResource(
+  source: ArrayBuffer | ArrayBufferView,
+  resourcePath: string,
+): Uint8Array | null {
+  const bytes = copyBytes(source);
+  const normalizedPath = resourcePath.replace(/^\/+/, "");
+  if (!normalizedPath) return null;
+
+  const directory = readZipDirectory(bytes, DEFAULT_JAR_VALIDATION_LIMITS);
+  const entry = directory.entries.find(
+    (candidate) => candidate.name === normalizedPath,
+  );
+  return entry ? readZipEntry(bytes, entry) : null;
+}
+
 function readZipDirectory(
   bytes: Uint8Array,
   limits: JarValidationLimits,

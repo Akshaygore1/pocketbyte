@@ -232,21 +232,33 @@ async function ensureAppInstalled(lib, appId) {
 }
 
 async function init() {
-    document.getElementById("loading").textContent = "Loading CheerpJ...";
+    const notifyHost = (type, details = {}) => {
+        if (window.parent !== window) {
+            window.parent.postMessage({
+                source: "freej2me-engine",
+                type,
+                ...details,
+            }, location.origin);
+        }
+    };
+    let failureStage = "runtime-loading";
 
-    display = document.getElementById('display');
-    screenCtx = display.getContext('2d');
+    try {
+        document.getElementById("loading").textContent = "Loading CheerpJ...";
 
-    setListeners();
+        display = document.getElementById('display');
+        screenCtx = display.getContext('2d');
 
-    window.libmidi = new LibMidi(createUnlockingAudioContext());
-    await window.libmidi.init();
-    window.libmidi.midiPlayer.addEventListener('end-of-media', e => {
-        window.evtQueue.queueEvent({kind: 'player-eom', player: e.target});
-    })
-    window.libmedia = new LibMedia();
+        setListeners();
 
-    await cheerpjInit({
+        window.libmidi = new LibMidi(createUnlockingAudioContext());
+        await window.libmidi.init();
+        window.libmidi.midiPlayer.addEventListener('end-of-media', e => {
+            window.evtQueue.queueEvent({kind: 'player-eom', player: e.target});
+        })
+        window.libmedia = new LibMedia();
+
+        await cheerpjInit({
         enableDebug: false,
         natives: {
             ...canvasFontNatives,
@@ -315,30 +327,69 @@ async function init() {
                 console.log('[sayobject]', label, obj);
             }
         }
-    });
+        });
 
-    document.getElementById("loading").textContent = "Loading...";
+        document.getElementById("loading").textContent = "Loading...";
 
-    const lib = await cheerpjRunLibrary(cheerpjWebRoot+"/freej2me-web.jar");
+        const lib = await cheerpjRunLibrary(cheerpjWebRoot+"/freej2me-web.jar");
 
-    const FreeJ2ME = await lib.org.recompile.freej2me.FreeJ2ME;
+        const FreeJ2ME = await lib.org.recompile.freej2me.FreeJ2ME;
 
-    let args;
+        let args;
 
-    if (sp.get('app')) {
-        const app = sp.get('app');
-        await ensureAppInstalled(lib, app);
+        if (sp.get('launchUrl')) {
+            failureStage = "midlet-discovery";
+            const response = await fetch(sp.get('launchUrl'));
+            if (!response.ok) throw new Error("The selected JAR could not be opened.");
+            const jarBytes = await response.arrayBuffer();
+            notifyHost("launch-consumed");
 
-        args = ['app', sp.get('app')];
-    } else {
-        args = ['jar', cheerpjWebRoot+"/jar/" + (sp.get('jar') || "game.jar")];
+            const identity = sp.get('identity');
+            const className = sp.get('main');
+            if (!identity || !className) {
+                throw new Error("The selected MIDlet declaration is incomplete.");
+            }
+
+            const LauncherUtil = await lib.pl.zb3.freej2me.launcher.LauncherUtil;
+            const MIDletLoader = await lib.org.recompile.mobile.MIDletLoader;
+            const File = await lib.java.io.File;
+            const HashMap = await lib.java.util.HashMap;
+            const jarFile = await new File(`/files/_tmp/${identity}.jar`);
+            await LauncherUtil.copyJar(new Int8Array(jarBytes), jarFile);
+            const loader = await MIDletLoader.getMIDletLoader(jarFile);
+            if (!loader) throw new Error("FreeJ2ME could not inspect the selected JAR.");
+
+            const appId = `handset_${identity}`;
+            await loader.setAppId(appId);
+            const settings = await new HashMap();
+            await settings.put("main", className);
+            await LauncherUtil.initApp(jarFile, loader, settings, null, null);
+            args = ['app', appId];
+        } else if (sp.get('app')) {
+            const app = sp.get('app');
+            await ensureAppInstalled(lib, app);
+            args = ['app', sp.get('app')];
+        } else {
+            args = ['jar', cheerpjWebRoot+"/jar/" + (sp.get('jar') || "game.jar")];
+        }
+
+        failureStage = "execution";
+        notifyHost("launching");
+        FreeJ2ME.main(args).catch(e => {
+            e.printStackTrace();
+            document.getElementById('loading').textContent = 'Crash :(';
+            notifyHost("failed", {
+                stage: "execution",
+                message: `${sp.get('name') || "The MIDlet"} could not start.`,
+            });
+        });
+    } catch (error) {
+        document.getElementById('loading').textContent = 'Launch failed';
+        notifyHost("failed", {
+            stage: failureStage,
+            message: error instanceof Error ? error.message : "The launch failed.",
+        });
     }
-
-    FreeJ2ME.main(args).catch(e => {
-        e.printStackTrace();
-        document.getElementById('loading').textContent = 'Crash :(';
-    });
-
 
 }
 

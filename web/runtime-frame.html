@@ -21,6 +21,9 @@
       const FRAME_SOURCE = "freej2me-runtime-frame";
       let session = null;
       let fixture = null;
+      let midlet = null;
+      let launchKind = null;
+      let launchUrl = null;
       let readinessTimer = null;
       const post = (type, details = {}) => parent.postMessage({ source: FRAME_SOURCE, session, type, ...details }, location.origin);
 
@@ -32,46 +35,92 @@
         readinessTimer = null;
       };
 
-      const waitForRenderedFixture = () => {
+      const releaseLaunchUrl = () => {
+        if (launchUrl) URL.revokeObjectURL(launchUrl);
+        launchUrl = null;
+      };
+
+      const waitForRenderedLaunch = () => {
         stopReadinessCheck();
         const startedAt = Date.now();
         readinessTimer = setInterval(() => {
           const canvas = engine.contentDocument?.querySelector("#display");
           const pixel = canvas?.getContext("2d")?.getImageData(0, 0, 1, 1).data;
-          const rendered = canvas?.localName === "canvas"
+          const renderedCanvas = canvas?.localName === "canvas"
             && canvas.style.display !== "none"
             && canvas.width > 0
-            && canvas.height > 0
-            && pixel?.[0] === 0x17
-            && pixel?.[1] === 0x30
-            && pixel?.[2] === 0x4a
-            && pixel?.[3] === 0xff;
+            && canvas.height > 0;
+          const rendered = launchKind === "fixture"
+            ? renderedCanvas
+              && pixel?.[0] === 0x17
+              && pixel?.[1] === 0x30
+              && pixel?.[2] === 0x4a
+              && pixel?.[3] === 0xff
+            : renderedCanvas;
 
           if (rendered) {
             stopReadinessCheck();
             engine.setAttribute(
               "aria-label",
-              "Redistributable smoke fixture rendered",
+              `${fixture.name} rendered`,
             );
             status.textContent = fixture.name;
             post("running", { fixtureName: fixture.name });
           } else if (Date.now() - startedAt > 60_000) {
             stopReadinessCheck();
             post("failed", {
-              stage: "launching",
-              message: "The FreeJ2ME-Web fixture did not render in time.",
+              stage: launchKind === "fixture" ? "launching" : "execution",
+              message: `${fixture.name} did not render in time.`,
             });
           }
         }, 100);
       };
 
       const launchFixture = () => {
+        launchKind = "fixture";
+        midlet = null;
         document.querySelector("#fixture").hidden = false;
         engine.removeAttribute("aria-label");
         status.textContent = "Loading FreeJ2ME-Web and CheerpJ…";
         engine.src = `/run.html?jar=runtime-smoke.jar&fractionScale=1&launch=${Date.now()}`;
-        engine.addEventListener("load", waitForRenderedFixture, { once: true });
+        engine.addEventListener("load", waitForRenderedLaunch, { once: true });
       };
+
+      const launchMidlet = (selectedMidlet) => {
+        launchKind = "midlet";
+        midlet = selectedMidlet;
+        fixture = { name: midlet.name };
+        releaseLaunchUrl();
+        launchUrl = URL.createObjectURL(
+          new Blob([midlet.jarBytes], { type: "application/java-archive" }),
+        );
+        document.querySelector("#fixture").hidden = false;
+        engine.removeAttribute("aria-label");
+        status.textContent = `Loading the runtime for ${midlet.name}…`;
+        const query = new URLSearchParams({
+          launchUrl,
+          identity: midlet.identity,
+          main: midlet.className,
+          name: midlet.name,
+          launch: String(Date.now()),
+        });
+        engine.src = `/run.html?${query}`;
+        engine.addEventListener("load", waitForRenderedLaunch, { once: true });
+      };
+
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin || event.source !== engine.contentWindow) return;
+        const message = event.data;
+        if (!message || message.source !== "freej2me-engine") return;
+        if (message.type === "launch-consumed") releaseLaunchUrl();
+        if (message.type === "launching") {
+          post("launching", { fixtureName: fixture.name });
+        }
+        if (message.type === "failed") {
+          stopReadinessCheck();
+          post("failed", { stage: message.stage, message: message.message });
+        }
+      });
 
       window.addEventListener("message", (event) => {
         if (event.origin !== location.origin || event.source !== parent) return;
@@ -84,9 +133,23 @@
           post("launching", { fixtureName: fixture.name });
           launchFixture();
         }
+        if (
+          command.type === "launch-midlet"
+          && command.midlet?.jarBytes
+          && typeof command.midlet.identity === "string"
+          && typeof command.midlet.name === "string"
+          && typeof command.midlet.className === "string"
+        ) {
+          post("runtime-loading", { fixtureName: command.midlet.name });
+          launchMidlet(command.midlet);
+        }
         if (command.type === "restart" && fixture) {
           post("restarting", { fixtureName: fixture.name });
-          launchFixture();
+          if (launchKind === "midlet" && midlet) {
+            launchMidlet(midlet);
+          } else {
+            launchFixture();
+          }
         }
         if (command.type === "focus") {
           engine.contentDocument?.querySelector("#display")?.focus();
@@ -107,6 +170,7 @@
         }
         if (command.type === "teardown") {
           stopReadinessCheck();
+          releaseLaunchUrl();
           engine.src = "about:blank";
           document.querySelector("#fixture").hidden = true;
         }
