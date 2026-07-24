@@ -22,7 +22,9 @@ export function closeContext(ctx) {
 export class LibMidi {
     constructor(context, destination=null) {
         this.context = context;
-        this.destination = destination || context.destination;
+        this.masterGain = context.createGain();
+        this.masterGain.connect(destination || context.destination);
+        this.destination = this.masterGain;
         this.initialized = false;
 
         this._midiPlayer = null;
@@ -72,9 +74,21 @@ export class LibMidi {
         }
 
         this.initialized = false;
+        this.masterGain.disconnect();
 
         // no context close as context is not ours
         // close players?
+    }
+
+    async resume() {
+        await this.context.resume();
+        if (this.context.state !== "running") {
+            throw new Error("Chrome did not allow emulator audio to start.");
+        }
+    }
+
+    setMuted(muted) {
+        this.masterGain.gain.value = muted ? 0 : 1;
     }
 
     get midiPlayer() {

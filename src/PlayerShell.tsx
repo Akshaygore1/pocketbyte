@@ -16,7 +16,7 @@ import {
 import { validateJar, type JarReview } from "./validation/validateJar";
 import "./PlayerShell.css";
 
-const fixture = { id: "smoke-fixture", name: "Redistributable smoke fixture" };
+const fixture = { id: "smoke-fixture", name: "Redistributable audio fixture" };
 const RESOLUTION_PRESETS = [
   { width: 128, height: 160 },
   { width: 176, height: 208 },
@@ -40,6 +40,49 @@ interface SelectedGame {
   review: JarReview;
   iconUrls: Map<number, string>;
   muted: boolean;
+}
+
+interface AudioView {
+  status: "uninitialized" | "initializing" | "ready" | "unavailable";
+  muted: boolean;
+  notice: string | null;
+}
+
+function initialAudioView(muted: boolean): AudioView {
+  return {
+    status: "uninitialized",
+    muted,
+    notice: null,
+  };
+}
+
+function reduceAudioEvent(
+  current: AudioView,
+  event: RuntimeLifecycleEvent,
+): AudioView {
+  switch (event.type) {
+    case "runtime-loading":
+    case "restarting":
+      return { ...current, status: "uninitialized", notice: null };
+    case "audio-initializing":
+      return {
+        ...current,
+        status: "initializing",
+        notice: "Starting emulator audio…",
+      };
+    case "audio-ready":
+      return {
+        status: "ready",
+        muted: event.muted,
+        notice: event.muted
+          ? "Emulator audio is ready and muted."
+          : "Emulator audio is ready.",
+      };
+    case "media-warning":
+      return { ...current, notice: event.message };
+    default:
+      return current;
+  }
 }
 
 function reduceRuntimeEvent(
@@ -88,6 +131,9 @@ function reduceRuntimeEvent(
             runtimeError: `${failureStageLabel(event.stage)}: ${event.message}`,
           }
         : current;
+    case "audio-initializing":
+    case "audio-ready":
+    case "media-warning":
     case "diagnostics":
     case "teardown":
       return current;
@@ -116,6 +162,7 @@ export function PlayerShell() {
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [resolution, setResolution] =
     useState<LogicalResolution>(DEFAULT_RESOLUTION);
+  const [audio, setAudio] = useState<AudioView>(() => initialAudioView(false));
 
   useEffect(() => {
     const gameStorage = createGameStorage();
@@ -150,6 +197,7 @@ export function PlayerShell() {
     adapter.current = runtime;
     const unsubscribe = runtime.subscribe((event) => {
       if (event.type === "runtime-ready") setRuntimeAvailable(true);
+      setAudio((current) => reduceAudioEvent(current, event));
       setPlayer((current) => reduceRuntimeEvent(current, event));
     });
     runtime.mount(frameContainer.current!);
@@ -239,6 +287,7 @@ export function PlayerShell() {
       : DEFAULT_RESOLUTION;
     setResolution(selectedResolution);
     setSelectedGame(game);
+    setAudio(initialAudioView(game.muted));
 
     try {
       const cached = await storage.current!.cacheGame({
@@ -304,6 +353,7 @@ export function PlayerShell() {
       className: midlet.className,
       jarBytes: game.bytes,
       resolution: launchResolution,
+      muted: game.muted,
     };
     await adapter.current?.launchMidlet(launch);
   }
@@ -340,6 +390,7 @@ export function PlayerShell() {
 
     setResolution(restoredResolution);
     setSelectedGame(restored);
+    setAudio(initialAudioView(restored.muted));
     if (!midlet) {
       setPlayer((current) => ({
         ...current,
@@ -509,6 +560,47 @@ export function PlayerShell() {
     }
   }
 
+  async function initializeAudio(): Promise<void> {
+    try {
+      await adapter.current?.initializeAudio();
+    } catch (error) {
+      setAudio((current) => ({
+        ...current,
+        status: "unavailable",
+        notice: error instanceof Error
+          ? error.message
+          : "Emulator audio could not be started.",
+      }));
+    }
+  }
+
+  function changeMuted(muted: boolean): void {
+    if (selectedGame) {
+      setSelectedGame({ ...selectedGame, muted });
+    }
+    setAudio((current) => ({
+      ...current,
+      muted,
+      notice: muted ? "Emulator audio is muted." : "Emulator audio is on.",
+    }));
+    adapter.current?.setMuted(muted);
+
+    if (selectedGame && lastGame?.identity === selectedGame.identity) {
+      void storage.current
+        ?.updateGameSettings<JarReview>(selectedGame.identity, {
+          muted,
+          resolution,
+        })
+        .then((updated) => setLastGame(updated))
+        .catch(() =>
+          setAudio((current) => ({
+            ...current,
+            notice: "The mute preference could not be saved for this game.",
+          })),
+        );
+    }
+  }
+
   function sendKey(code: string, pressed: boolean): boolean {
     if (pressed) {
       if (pressedKeys.current.has(code)) return true;
@@ -631,6 +723,15 @@ export function PlayerShell() {
                 ].includes(player.state)}
                 onChange={changeResolution}
               />
+              <AudioControl
+                audio={audio}
+                disabled={
+                  player.state !== "running"
+                  || audio.status === "initializing"
+                }
+                onInitialize={() => void initializeAudio()}
+                onMutedChange={changeMuted}
+              />
               <JarMetadataReview
                 game={selectedGame}
                 state={player.state}
@@ -644,8 +745,16 @@ export function PlayerShell() {
             disabled={player.state !== "empty"}
             onClick={() => void adapter.current?.launch(fixture)}
           >
-            Launch fixture
+            Launch audio fixture
           </button>
+          {!selectedGame && player.state === "running" && (
+            <AudioControl
+              audio={audio}
+              disabled={audio.status === "initializing"}
+              onInitialize={() => void initializeAudio()}
+              onMutedChange={changeMuted}
+            />
+          )}
         </section>
 
         <aside className="keyboard-legend" aria-label="Keyboard controls">
@@ -703,6 +812,53 @@ export function PlayerShell() {
         </div>
       </section>
     </main>
+  );
+}
+
+function AudioControl({
+  audio,
+  disabled,
+  onInitialize,
+  onMutedChange,
+}: {
+  audio: AudioView;
+  disabled: boolean;
+  onInitialize: () => void;
+  onMutedChange: (muted: boolean) => void;
+}) {
+  const needsInitialization =
+    audio.status === "uninitialized" || audio.status === "unavailable";
+
+  return (
+    <div className="audio-control">
+      <div>
+        <span className="audio-label">Game audio</span>
+        <p aria-live="polite">
+          {audio.notice
+            ?? "Start audio with a player gesture after the game is running."}
+        </p>
+      </div>
+      <button
+        type="button"
+        disabled={disabled}
+        aria-pressed={needsInitialization ? undefined : audio.muted}
+        onClick={() => {
+          if (needsInitialization) {
+            onInitialize();
+          } else {
+            onMutedChange(!audio.muted);
+          }
+        }}
+      >
+        {audio.status === "initializing"
+          ? "Starting…"
+          : needsInitialization
+            ? "Enable audio"
+            : audio.muted
+              ? "Unmute"
+              : "Mute"}
+      </button>
+    </div>
   );
 }
 

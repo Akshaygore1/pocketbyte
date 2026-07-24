@@ -31,6 +31,21 @@
       const engine = document.querySelector("#engine");
       const status = document.querySelector("#status");
 
+      window.handsetAudio = {
+        initialize() {
+          const controls = engine.contentWindow?.handsetAudio;
+          if (!controls) {
+            return Promise.reject(
+              new Error("Audio is still loading. Try again in a moment."),
+            );
+          }
+          return controls.initialize();
+        },
+        setMuted(muted) {
+          engine.contentWindow?.handsetAudio?.setMuted(Boolean(muted));
+        },
+      };
+
       const stopReadinessCheck = () => {
         if (readinessTimer !== null) clearInterval(readinessTimer);
         readinessTimer = null;
@@ -83,7 +98,7 @@
         document.querySelector("#fixture").hidden = false;
         engine.removeAttribute("aria-label");
         status.textContent = "Loading FreeJ2ME-Web and CheerpJ…";
-        engine.src = `/run.html?jar=runtime-smoke.jar&fractionScale=1&shellControls=1&launch=${Date.now()}`;
+        engine.src = `/run.html?jar=runtime-smoke.jar&audioFixture=1&fractionScale=1&shellControls=1&launch=${Date.now()}`;
         engine.addEventListener("load", waitForRenderedLaunch, { once: true });
       };
 
@@ -105,6 +120,7 @@
           name: midlet.name,
           width: String(midlet.resolution.width),
           height: String(midlet.resolution.height),
+          muted: midlet.muted ? "1" : "0",
           fractionScale: "1",
           shellControls: "1",
           launch: String(Date.now()),
@@ -157,6 +173,9 @@
         }
         if (message.type === "launching") {
           post("launching", { fixtureName: fixture.name });
+        }
+        if (message.type === "media-warning") {
+          post("media-warning", { message: message.message });
         }
         if (message.type === "failed") {
           stopReadinessCheck();

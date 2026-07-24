@@ -19,6 +19,9 @@ export type RuntimeLifecycleEvent =
   | { type: "launching"; fixtureName: string }
   | { type: "running"; fixtureName: string }
   | { type: "restarting"; fixtureName: string }
+  | { type: "audio-initializing" }
+  | { type: "audio-ready"; muted: boolean }
+  | { type: "media-warning"; message: string }
   | { type: "failed"; stage: string; message: string }
   | { type: "diagnostics"; message: string }
   | { type: "teardown" };
@@ -33,6 +36,7 @@ export interface MidletLaunch {
   className: string;
   jarBytes: Uint8Array;
   resolution: LogicalResolution;
+  muted: boolean;
 }
 
 export interface LogicalResolution {
@@ -47,6 +51,8 @@ export interface RuntimeAdapter {
   launchMidlet(midlet: MidletLaunch): Promise<void>;
   clearGameData(identity: string): Promise<void>;
   removeGameData(identity: string): Promise<void>;
+  initializeAudio(): Promise<void>;
+  setMuted(muted: boolean): void;
   focus(): void;
   input(code: string, pressed: boolean): boolean;
   restart(resolution?: LogicalResolution): Promise<void>;
@@ -132,6 +138,10 @@ function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
       const fixtureName = stringField(value, "fixtureName");
       return fixtureName ? { type: "runtime-loading", fixtureName } : null;
     }
+    case "media-warning": {
+      const message = stringField(value, "message");
+      return message ? { type: "media-warning", message } : null;
+    }
     case "failed": {
       const stage = stringField(value, "stage");
       const message = stringField(value, "message");
@@ -215,6 +225,25 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
 
   removeGameData(identity: string): Promise<void> {
     return this.manageGameData("remove", identity);
+  }
+
+  async initializeAudio(): Promise<void> {
+    const controls = this.audioControls();
+    if (!controls) {
+      throw new Error("Audio is still loading. Try again in a moment.");
+    }
+
+    this.emit({ type: "audio-initializing" });
+    const result = await controls.initialize();
+    this.emit({ type: "audio-ready", muted: result.muted });
+  }
+
+  setMuted(muted: boolean): void {
+    if (this.#lastMidlet) {
+      this.#lastMidlet = { ...this.#lastMidlet, muted };
+    }
+    this.audioControls()?.setMuted(muted);
+    this.emit({ type: "audio-ready", muted });
   }
 
   focus(): void {
@@ -340,6 +369,15 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     );
   }
 
+  private audioControls(): RuntimeFrameAudioControls | null {
+    if (this.#destroyed || !this.#frame?.contentWindow) return null;
+    return (
+      this.#frame.contentWindow as Window & {
+        handsetAudio?: RuntimeFrameAudioControls;
+      }
+    ).handsetAudio ?? null;
+  }
+
   private manageGameData(
     action: "clear" | "remove",
     identity: string,
@@ -387,3 +425,8 @@ const defaultFrameFactory: RuntimeFrameFactory = {
     return frame;
   },
 };
+
+interface RuntimeFrameAudioControls {
+  initialize(): Promise<{ muted: boolean }>;
+  setMuted(muted: boolean): void;
+}

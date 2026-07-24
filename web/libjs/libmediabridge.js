@@ -9,11 +9,29 @@ export default {
         return player;
     },
     async Java_pl_zb3_freej2me_bridge_media_MediaBridge_playerLoad(lib, player, data, contentType) {
-        const res = await player.load(data.buffer, contentType);
-        return res;
+        try {
+            const loaded = await player.load(data.buffer, contentType);
+            if (!loaded) {
+                window.reportRecoverableMediaError?.(
+                    `This game's ${contentType || "media"} format is not supported. Gameplay can continue without it.`,
+                );
+            }
+            return loaded;
+        } catch (error) {
+            if (
+                error?.name === "NotSupportedError"
+                || error?.name === "EncodingError"
+            ) {
+                window.reportRecoverableMediaError?.(
+                    "One media item could not be decoded. Gameplay can continue without it.",
+                );
+                return false;
+            }
+            throw error;
+        }
     },
     async Java_pl_zb3_freej2me_bridge_media_MediaBridge_playerPlay(lib, player) {
-        player.play();
+        await player.play();
     },
     async Java_pl_zb3_freej2me_bridge_media_MediaBridge_playerSetLooping(lib, player, loop) {
         player.setLooping(loop);

@@ -2,8 +2,10 @@ import { transcode } from "./transcode/transcode.js"
 
 
 export class LibMedia {
-    constructor() {
-
+    constructor(reportWarning = () => {}) {
+        this.players = new Set();
+        this.muted = false;
+        this.reportWarning = reportWarning;
     }
 
     async init() {
@@ -12,28 +14,32 @@ export class LibMedia {
 
 
     async close() {
-        // close players?
+        this.players.forEach(player => player.close());
+        this.players.clear();
     }
 
     createMediaPlayer() {
-        return new MediaPlayer();
+        const player = new MediaPlayer(
+            () => this.players.delete(player),
+            this.reportWarning,
+        );
+        player.setMuted(this.muted);
+        this.players.add(player);
+        return player;
+    }
+
+    setMuted(muted) {
+        this.muted = Boolean(muted);
+        this.players.forEach(player => player.setMuted(this.muted));
+    }
+
+    async resume() {
+        await Promise.all(
+            Array.from(this.players, player => player.resume()),
+        );
     }
 
 }
-
-
-function unlockMediaElement(mediaElement) {
-    const b = document.body;
-    const events = ['touchstart','touchend', 'mousedown','keydown'];
-    events.forEach(e => b.addEventListener(e, unlock, false));
-    function unlock() {
-        console.log('muted: unmuting');
-        mediaElement.muted = false;
-        events.forEach(e => b.removeEventListener(e, unlock));
-    }
-}
-
-
 
 
 function setMediaBlob(mediaElement, blob, tag) {
@@ -77,8 +83,11 @@ export class MediaPlayer extends EventTarget {
         URL.revokeObjectURL(objectUrl);
     });
 
-    constructor() {
+    constructor(onClose = () => {}, reportWarning = () => {}) {
         super();
+        this.onClose = onClose;
+        this.reportWarning = reportWarning;
+        this.playRequested = false;
 
         // Create a MediaSource and a hidden video element.
 
@@ -102,6 +111,7 @@ export class MediaPlayer extends EventTarget {
 
         // Listen for media ending to dispatch an event.
         this.mediaElement.addEventListener("ended", () => {
+            this.playRequested = false;
             this.stopFrameDisplay();
             this.dispatchEvent(new Event("end-of-media"));
         });
@@ -214,21 +224,56 @@ export class MediaPlayer extends EventTarget {
     }
 
     async play() {
+        this.playRequested = true;
         try {
             await this.mediaElement.play();
         } catch(e) {
             if (e.name == 'NotAllowedError') {
                 console.log('playing muted');
                 this.mediaElement.muted = true;
-                unlockMediaElement(this.mediaElement);
 
                 // might be.. interrupted
                 try {
                     await this.mediaElement.play();
-                } catch (e) {}
+                } catch (error) {
+                    if (error.name === "NotSupportedError") {
+                        this.reportWarning(
+                            "One media item cannot play in Chrome. Gameplay can continue without it.",
+                        );
+                        return;
+                    }
+                    throw error;
+                }
+                return;
             }
+            if (e.name === "NotSupportedError") {
+                this.reportWarning(
+                    "One media item cannot play in Chrome. Gameplay can continue without it.",
+                );
+                return;
+            }
+            throw e;
         }
 
+    }
+
+    async resume() {
+        if (!this.playRequested || !this.mediaElement.paused) return;
+        try {
+            await this.mediaElement.play();
+        } catch (error) {
+            if (error.name === "NotSupportedError") {
+                this.reportWarning(
+                    "One media item cannot play in Chrome. Gameplay can continue without it.",
+                );
+                return;
+            }
+            throw error;
+        }
+    }
+
+    setMuted(muted) {
+        this.mediaElement.muted = Boolean(muted);
     }
 
     pause() {
@@ -236,6 +281,7 @@ export class MediaPlayer extends EventTarget {
     }
 
     stop() {
+        this.playRequested = false;
         this.pause();
         this.mediaElement.currentTime = 0;
     }
@@ -290,10 +336,12 @@ export class MediaPlayer extends EventTarget {
     }
 
     close() {
+        this.playRequested = false;
         if (this.objectUrl) {
             URL.revokeObjectURL(this.objectUrl);
         }
         this.constructor._finalizer.unregister(this);
+        this.onClose();
     }
 
     async getSnapshot(type) {

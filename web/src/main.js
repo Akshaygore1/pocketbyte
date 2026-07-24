@@ -243,6 +243,8 @@ async function init() {
         }
     };
     let failureStage = "runtime-loading";
+    let audioMuted = sp.get("muted") === "1";
+    let audioFixtureStarted = false;
 
     try {
         document.getElementById("loading").textContent = "Loading CheerpJ...";
@@ -252,12 +254,57 @@ async function init() {
 
         setListeners();
 
-        window.libmidi = new LibMidi(createUnlockingAudioContext());
-        await window.libmidi.init();
-        window.libmidi.midiPlayer.addEventListener('end-of-media', e => {
-            window.evtQueue.queueEvent({kind: 'player-eom', player: e.target});
-        })
-        window.libmedia = new LibMedia();
+        window.reportRecoverableMediaError = message => {
+            notifyHost("media-warning", { message });
+        };
+        window.libmedia = new LibMedia(window.reportRecoverableMediaError);
+        const applyMutedState = () => {
+            window.libmidi?.setMuted(audioMuted);
+            window.libmedia.setMuted(audioMuted);
+        };
+        try {
+            window.libmidi = new LibMidi(createUnlockingAudioContext());
+            await window.libmidi.init();
+            window.libmidi.midiPlayer.addEventListener('end-of-media', e => {
+                window.evtQueue.queueEvent({kind: 'player-eom', player: e.target});
+            })
+        } catch (error) {
+            window.libmidi = null;
+            window.reportRecoverableMediaError(
+                "MIDI audio is unavailable, but gameplay can continue.",
+            );
+        }
+        applyMutedState();
+        window.handsetAudio = {
+            async initialize() {
+                const tasks = [window.libmedia.resume()];
+                if (window.libmidi) tasks.push(window.libmidi.resume());
+                await Promise.all(tasks);
+                if (
+                    sp.get("audioFixture") === "1"
+                    && window.libmidi
+                    && !audioFixtureStarted
+                ) {
+                    const fixtureResponse = await fetch(
+                        new URL("../libmidi/test/koko.mid", import.meta.url),
+                    );
+                    if (!fixtureResponse.ok) {
+                        throw new Error("The audio fixture could not be loaded.");
+                    }
+                    audioFixtureStarted = true;
+                    await window.libmidi.midiPlayer.setSequence(
+                        await fixtureResponse.arrayBuffer(),
+                    );
+                    window.libmidi.midiPlayer.play();
+                }
+                applyMutedState();
+                return { muted: audioMuted };
+            },
+            setMuted(muted) {
+                audioMuted = Boolean(muted);
+                applyMutedState();
+            },
+        };
 
         await cheerpjInit({
         enableDebug: false,
