@@ -129,7 +129,8 @@ h1 {
 }
 
 .privacy-copy,
-.alert {
+.alert,
+.saved-game-status {
   margin: 0.7rem 0 0;
   color: #8f9a9f;
   font-size: 0.75rem;
@@ -138,6 +139,73 @@ h1 {
 
 .alert {
   color: #f3b8ad;
+}
+
+.saved-game {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 0.9rem;
+  padding: 0.85rem;
+  border: 1px solid #3d494d;
+  border-radius: 0.65rem;
+  background: #11181b;
+}
+
+.saved-game .section-kicker {
+  margin-bottom: 0.25rem;
+}
+
+.saved-game h3,
+.saved-game p {
+  margin: 0;
+}
+
+.saved-game h3 {
+  overflow: hidden;
+  color: #eef1f2;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-game p:last-child {
+  margin-top: 0.25rem;
+  color: #829095;
+  font-size: 0.68rem;
+}
+
+.saved-game-actions {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.saved-game-actions button {
+  border: 1px solid #d9a94f;
+  border-radius: 0.4rem;
+  padding: 0.48rem 0.65rem;
+  color: #101416;
+  background: #d9a94f;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.saved-game-actions .remove-game {
+  color: #d5dcde;
+  border-color: #4a555a;
+  background: transparent;
+}
+
+.saved-game-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.saved-game-actions button:focus-visible {
+  outline: 2px solid #f2c46d;
+  outline-offset: 2px;
 }
 
 .fixture-launch {
@@ -197,6 +265,16 @@ h1 {
   color: #77858a;
   font-size: 0.68rem;
   line-height: 1.4;
+}
+
+@media (max-width: 38rem) {
+  .saved-game {
+    grid-template-columns: 1fr;
+  }
+
+  .saved-game-actions {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 .keyboard-legend {

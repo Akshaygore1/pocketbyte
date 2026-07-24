@@ -9,9 +9,10 @@ import {
 } from "./runtime/runtimeAdapter";
 import { readValidatedJarResource } from "./jar/validateJar";
 import {
-  readGameResolution,
-  writeGameResolution,
-} from "./storage/resolutionStorage";
+  createGameStorage,
+  type CachedGame,
+  type GameStorage,
+} from "./storage/gameStorage";
 import { validateJar, type JarReview } from "./validation/validateJar";
 import "./PlayerShell.css";
 
@@ -34,9 +35,11 @@ interface PlayerView {
 
 interface SelectedGame {
   identity: string;
+  sourceFileName: string;
   bytes: Uint8Array;
   review: JarReview;
   iconUrls: Map<number, string>;
+  muted: boolean;
 }
 
 function reduceRuntimeEvent(
@@ -95,18 +98,51 @@ export function PlayerShell() {
   const frameContainer = useRef<HTMLDivElement>(null);
   const phone = useRef<HTMLDivElement>(null);
   const adapter = useRef<CheerpJFrameRuntimeAdapter | null>(null);
+  const storage = useRef<GameStorage | null>(null);
   const pressedKeys = useRef(new Set<string>());
   const validationAttempt = useRef(0);
+  const resumeInProgress = useRef(false);
   const [player, setPlayer] = useState<PlayerView>({
     state: "loading-runtime",
     frameLabel: "Loading runtime frame…",
     runtimeError: null,
   });
   const [selectedGame, setSelectedGame] = useState<SelectedGame | null>(null);
+  const [lastGame, setLastGame] = useState<CachedGame<JarReview> | null>(null);
+  const [lastGameLoading, setLastGameLoading] = useState(true);
+  const [lastGameBusy, setLastGameBusy] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [resolution, setResolution] =
     useState<LogicalResolution>(DEFAULT_RESOLUTION);
+
+  useEffect(() => {
+    const gameStorage = createGameStorage();
+    storage.current = gameStorage;
+    let cancelled = false;
+
+    void gameStorage
+      .getLastGame<JarReview>()
+      .then((cached) => {
+        if (!cancelled) setLastGame(cached);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setValidationError(
+            "Saved games could not be read from this browser.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLastGameLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      gameStorage.close();
+      storage.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const runtime = new CheerpJFrameRuntimeAdapter();
@@ -134,6 +170,7 @@ export function PlayerShell() {
       runtimeAvailable
       && player.state === "ready"
       && selectedGame?.review.midlets.length === 1
+      && !resumeInProgress.current
     ) {
       void launchMidlet(selectedGame, selectedGame.review.midlets[0]);
     }
@@ -179,24 +216,48 @@ export function PlayerShell() {
     }
     if (validationAttempt.current !== attempt) return;
 
+    let existing: CachedGame<JarReview> | null = null;
+    try {
+      existing = await storage.current?.getGame<JarReview>(result.sha256) ?? null;
+    } catch {
+      // A storage read failure is surfaced when caching is attempted at launch.
+    }
+    if (validationAttempt.current !== attempt) return;
+
     const game = {
       identity: result.sha256,
+      sourceFileName: file.name,
       bytes,
       review: result.metadata,
       iconUrls: createMidletIconUrls(bytes, result.metadata),
+      muted: existing?.settings.muted ?? false,
     };
-    const rememberedResolution = readGameResolution(
-      game.identity,
-      DEFAULT_RESOLUTION,
-    );
-    setResolution(
-      RESOLUTION_PRESETS.find(
-        (preset) =>
-          preset.width === rememberedResolution.width
-          && preset.height === rememberedResolution.height,
-      ) ?? DEFAULT_RESOLUTION,
-    );
+    const selectedResolution = existing
+      ? supportedResolution(existing.settings.resolution)
+      : DEFAULT_RESOLUTION;
+    setResolution(selectedResolution);
     setSelectedGame(game);
+
+    try {
+      const cached = await storage.current!.cacheGame({
+        sourceFileName: game.sourceFileName,
+        jarBytes: game.bytes,
+        metadata: game.review,
+        ...(existing?.selectedMidlet
+          ? { selectedMidlet: existing.selectedMidlet }
+          : {}),
+        settings: {
+          muted: game.muted,
+          resolution: selectedResolution,
+        },
+      });
+      if (validationAttempt.current !== attempt) return;
+      setLastGame(cached);
+    } catch {
+      setValidationError(
+        "This game could not be remembered locally. You can still review it and try again.",
+      );
+    }
     setPlayer((current) => ({
       ...current,
       state: "ready",
@@ -208,16 +269,131 @@ export function PlayerShell() {
   async function launchMidlet(
     game: SelectedGame,
     midlet: JarReview["midlets"][number],
+    launchResolution: LogicalResolution = resolution,
   ): Promise<void> {
+    setValidationError(null);
+    let cached: CachedGame<JarReview>;
+    try {
+      cached = await storage.current!.cacheGame({
+        sourceFileName: game.sourceFileName,
+        jarBytes: game.bytes,
+        metadata: game.review,
+        selectedMidlet: {
+          name: midlet.name,
+          className: midlet.className,
+          ...(midlet.icon ? { iconPath: midlet.icon } : {}),
+        },
+        settings: {
+          muted: game.muted,
+          resolution: launchResolution,
+        },
+      });
+    } catch {
+      setValidationError(
+        "This game could not be saved locally. Check browser storage and try again.",
+      );
+      return;
+    }
+
+    setLastGame(cached);
     const launch: MidletLaunch = {
       identity: game.identity,
       name: midlet.name,
       className: midlet.className,
       jarBytes: game.bytes,
-      resolution,
+      resolution: launchResolution,
     };
-    writeGameResolution(game.identity, resolution);
     await adapter.current?.launchMidlet(launch);
+  }
+
+  async function resumeLastGame(): Promise<void> {
+    if (!lastGame || lastGameBusy) return;
+
+    setLastGameBusy(true);
+    resumeInProgress.current = true;
+    const restoredResolution = supportedResolution(lastGame.settings.resolution);
+    const restored: SelectedGame = {
+      identity: lastGame.identity,
+      sourceFileName: lastGame.sourceFileName,
+      bytes: lastGame.jarBytes,
+      review: lastGame.metadata,
+      iconUrls: createMidletIconUrls(lastGame.jarBytes, lastGame.metadata),
+      muted: lastGame.settings.muted,
+    };
+    const midlet = lastGame.selectedMidlet
+      ? lastGame.metadata.midlets.find(
+          (candidate) =>
+            candidate.className === lastGame.selectedMidlet?.className,
+        )
+      : undefined;
+
+    if (lastGame.selectedMidlet && !midlet) {
+      resumeInProgress.current = false;
+      setLastGameBusy(false);
+      setValidationError(
+        "The saved MIDlet is no longer present in this cached game.",
+      );
+      return;
+    }
+
+    setResolution(restoredResolution);
+    setSelectedGame(restored);
+    if (!midlet) {
+      setPlayer((current) => ({
+        ...current,
+        state: "ready",
+        runtimeError: null,
+      }));
+      resumeInProgress.current = false;
+      setLastGameBusy(false);
+      return;
+    }
+
+    try {
+      await launchMidlet(restored, midlet, restoredResolution);
+    } finally {
+      resumeInProgress.current = false;
+      setLastGameBusy(false);
+    }
+  }
+
+  async function removeLastGame(): Promise<void> {
+    if (
+      !lastGame
+      || lastGameBusy
+      || !window.confirm(
+        `Remove ${displayGameName(lastGame)}? This deletes its cached JAR, `
+          + "player settings, and saved game data from this browser.",
+      )
+    ) {
+      return;
+    }
+
+    const identity = lastGame.identity;
+    setLastGameBusy(true);
+    if (selectedGame?.identity === identity) {
+      validationAttempt.current += 1;
+      releasePressedKeys();
+      adapter.current?.reset();
+      setPlayer({
+        state: "loading-runtime",
+        frameLabel: "Resetting runtime frame…",
+        runtimeError: null,
+      });
+      setSelectedGame(null);
+    }
+
+    try {
+      await storage.current!.removeGame(identity);
+      setLastGame(null);
+      setValidationError(null);
+    } catch {
+      setValidationError(
+        "The saved game could not be removed from this browser.",
+      );
+    } finally {
+      setLastGameBusy(false);
+    }
   }
 
   function changeResolution(value: string): void {
@@ -239,7 +415,19 @@ export function PlayerShell() {
 
     const selected = { ...next };
     setResolution(selected);
-    writeGameResolution(selectedGame.identity, selected);
+    if (lastGame?.identity === selectedGame.identity) {
+      void storage.current
+        ?.updateGameSettings<JarReview>(selectedGame.identity, {
+          muted: selectedGame.muted,
+          resolution: selected,
+        })
+        .then((updated) => setLastGame(updated))
+        .catch(() =>
+          setValidationError(
+            "The new resolution could not be saved for this game.",
+          ),
+        );
+    }
 
     if (activeGame) {
       releasePressedKeys();
@@ -297,6 +485,46 @@ export function PlayerShell() {
           <p className="privacy-copy">
             Your selected game stays in this browser and is not uploaded.
           </p>
+          {lastGameLoading && (
+            <p className="saved-game-status">Checking for your last game…</p>
+          )}
+          {!lastGameLoading && lastGame && (
+            <section className="saved-game" aria-labelledby="saved-game-heading">
+              <div>
+                <p className="section-kicker">Last played</p>
+                <h3 id="saved-game-heading">{displayGameName(lastGame)}</h3>
+                <p>
+                  {lastGame.selectedMidlet?.name ?? "Choose a MIDlet"}
+                  {" · "}
+                  {lastGame.settings.resolution.width}×
+                  {lastGame.settings.resolution.height}
+                </p>
+              </div>
+              <div className="saved-game-actions">
+                <button
+                  type="button"
+                  disabled={
+                    !runtimeAvailable
+                    || lastGameBusy
+                    || selectedGame?.identity === lastGame.identity
+                    || ["validating", "loading-runtime", "launching", "running", "restarting"]
+                      .includes(player.state)
+                  }
+                  onClick={() => void resumeLastGame()}
+                >
+                  Resume last game
+                </button>
+                <button
+                  className="remove-game"
+                  type="button"
+                  disabled={lastGameBusy || player.state === "validating"}
+                  onClick={() => void removeLastGame()}
+                >
+                  Remove game
+                </button>
+              </div>
+            </section>
+          )}
           {validationError && <p className="alert" role="alert">{validationError}</p>}
           {player.runtimeError && <p className="alert" role="alert">{player.runtimeError}</p>}
           {selectedGame && (
@@ -561,6 +789,17 @@ function iconMimeType(path: string): string {
 
 function resolutionValue(resolution: LogicalResolution): string {
   return `${resolution.width}x${resolution.height}`;
+}
+
+function supportedResolution(resolution: LogicalResolution): LogicalResolution {
+  return RESOLUTION_PRESETS.find(
+    (preset) =>
+      preset.width === resolution.width && preset.height === resolution.height,
+  ) ?? DEFAULT_RESOLUTION;
+}
+
+function displayGameName(game: CachedGame<JarReview>): string {
+  return game.metadata.suiteName ?? game.sourceFileName;
 }
 
 function failureStageLabel(stage: string): string {

@@ -48,6 +48,7 @@ export interface RuntimeAdapter {
   focus(): void;
   input(code: string, pressed: boolean): boolean;
   restart(resolution?: LogicalResolution): Promise<void>;
+  reset(): void;
   diagnostics(): void;
   destroy(): void;
   subscribe(listener: (event: RuntimeLifecycleEvent) => void): () => void;
@@ -217,10 +218,17 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
 
     this.emit({ type: "restarting", fixtureName: launchName });
     this.#restartPending = true;
-    this.command({ type: "teardown" });
-    this.#frame?.remove();
-    this.#frame = null;
+    this.removeFrame();
     this.createFrame();
+  }
+
+  reset(): void {
+    this.#lastFixture = null;
+    this.#lastMidlet = null;
+    this.#restartPending = false;
+    this.removeFrame();
+    this.createFrame();
+    this.emit({ type: "teardown" });
   }
 
   diagnostics(): void {
@@ -229,11 +237,9 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
 
   destroy(): void {
     if (this.#destroyed) return;
-    this.command({ type: "teardown" });
+    this.removeFrame();
     this.#destroyed = true;
     window.removeEventListener("message", this.#onMessage);
-    this.#frame?.remove();
-    this.#frame = null;
     this.#container = null;
     this.#restartPending = false;
     this.emit({ type: "teardown" });
@@ -275,6 +281,12 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
       { ...command, source: SHELL_SOURCE, session: this.#session } as FrameCommand,
       window.location.origin,
     );
+  }
+
+  private removeFrame(): void {
+    this.command({ type: "teardown" });
+    this.#frame?.remove();
+    this.#frame = null;
   }
 
   private emit(event: RuntimeLifecycleEvent): void {
