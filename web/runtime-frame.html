@@ -24,6 +24,7 @@
       let midlet = null;
       let launchKind = null;
       let launchUrl = null;
+      let dataOperation = null;
       let readinessTimer = null;
       const post = (type, details = {}) => parent.postMessage({ source: FRAME_SOURCE, session, type, ...details }, location.origin);
 
@@ -112,16 +113,63 @@
         engine.addEventListener("load", waitForRenderedLaunch, { once: true });
       };
 
+      const manageGameData = (command) => {
+        stopReadinessCheck();
+        releaseLaunchUrl();
+        launchKind = "data-operation";
+        fixture = null;
+        midlet = null;
+        dataOperation = {
+          action: command.action,
+          requestId: command.requestId,
+        };
+        document.querySelector("#fixture").hidden = false;
+        engine.removeAttribute("aria-label");
+        status.textContent = command.action === "clear"
+          ? "Clearing saved progress…"
+          : "Removing local game data…";
+        const query = new URLSearchParams({
+          operation: command.action === "clear" ? "clear-game-data" : "remove-game",
+          identity: command.identity,
+          requestId: command.requestId,
+          launch: String(Date.now()),
+        });
+        engine.src = `/run.html?${query}`;
+      };
+
       window.addEventListener("message", (event) => {
         if (event.origin !== location.origin || event.source !== engine.contentWindow) return;
         const message = event.data;
         if (!message || message.source !== "freej2me-engine") return;
         if (message.type === "launch-consumed") releaseLaunchUrl();
+        if (
+          message.type === "operation-complete"
+          && dataOperation
+          && message.requestId === dataOperation.requestId
+        ) {
+          post("game-data-operation-complete", {
+            requestId: dataOperation.requestId,
+          });
+          dataOperation = null;
+          engine.src = "about:blank";
+          document.querySelector("#fixture").hidden = true;
+          return;
+        }
         if (message.type === "launching") {
           post("launching", { fixtureName: fixture.name });
         }
         if (message.type === "failed") {
           stopReadinessCheck();
+          if (dataOperation) {
+            post("game-data-operation-failed", {
+              requestId: dataOperation.requestId,
+              message: message.message,
+            });
+            dataOperation = null;
+            engine.src = "about:blank";
+            document.querySelector("#fixture").hidden = true;
+            return;
+          }
           post("failed", { stage: message.stage, message: message.message });
         }
       });
@@ -148,6 +196,14 @@
         ) {
           post("runtime-loading", { fixtureName: command.midlet.name });
           launchMidlet(command.midlet);
+        }
+        if (
+          command.type === "manage-game-data"
+          && (command.action === "clear" || command.action === "remove")
+          && /^[a-f0-9]{64}$/.test(command.identity)
+          && typeof command.requestId === "string"
+        ) {
+          manageGameData(command);
         }
         if (command.type === "restart" && fixture) {
           post("restarting", { fixtureName: fixture.name });
@@ -177,6 +233,7 @@
         if (command.type === "teardown") {
           stopReadinessCheck();
           releaseLaunchUrl();
+          dataOperation = null;
           engine.src = "about:blank";
           document.querySelector("#fixture").hidden = true;
         }

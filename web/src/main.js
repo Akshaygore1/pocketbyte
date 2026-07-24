@@ -334,6 +334,39 @@ async function init() {
 
         const lib = await cheerpjRunLibrary(cheerpjWebRoot+"/freej2me-web.jar");
 
+        const operation = sp.get("operation");
+        if (operation) {
+            failureStage = "game-data-operation";
+            const identity = sp.get("identity");
+            const requestId = sp.get("requestId");
+            if (!identity || !/^[a-f0-9]{64}$/.test(identity) || !requestId) {
+                throw new Error("The game data request is invalid.");
+            }
+
+            const LauncherUtil = await lib.pl.zb3.freej2me.launcher.LauncherUtil;
+            const File = await lib.java.io.File;
+            const appId = `handset_${identity}`;
+            let deletedPath;
+            let deletionError;
+            if (operation === "clear-game-data") {
+                deletedPath = `${appId}/rms`;
+                deletionError = "The runtime could not clear the game's saved progress.";
+                await LauncherUtil.wipeAppData(appId);
+            } else if (operation === "remove-game") {
+                deletedPath = appId;
+                deletionError = "The runtime could not remove the game's local data.";
+                await LauncherUtil.uninstallApp(appId);
+            } else {
+                throw new Error("The game data operation is not supported.");
+            }
+            const deletedFile = await new File(deletedPath);
+            if (await deletedFile.exists()) {
+                throw new Error(deletionError);
+            }
+            notifyHost("operation-complete", { requestId });
+            return;
+        }
+
         const FreeJ2ME = await lib.org.recompile.freej2me.FreeJ2ME;
 
         let args;

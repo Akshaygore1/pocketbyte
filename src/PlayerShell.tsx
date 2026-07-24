@@ -112,6 +112,7 @@ export function PlayerShell() {
   const [lastGameLoading, setLastGameLoading] = useState(true);
   const [lastGameBusy, setLastGameBusy] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [resolution, setResolution] =
     useState<LogicalResolution>(DEFAULT_RESOLUTION);
@@ -187,6 +188,7 @@ export function PlayerShell() {
     validationAttempt.current = attempt;
     setSelectedGame(null);
     setValidationError(null);
+    setStorageNotice(null);
     setPlayer((current) => ({ ...current, state: "validating" }));
 
     const result = await validateJar(file);
@@ -370,29 +372,101 @@ export function PlayerShell() {
     }
 
     const identity = lastGame.identity;
-    setLastGameBusy(true);
-    if (selectedGame?.identity === identity) {
-      validationAttempt.current += 1;
-      releasePressedKeys();
-      adapter.current?.reset();
-      setPlayer({
-        state: "loading-runtime",
-        frameLabel: "Resetting runtime frame…",
-        runtimeError: null,
-      });
-      setSelectedGame(null);
-    }
+    const removingSelectedGame = selectedGame?.identity === identity;
+    beginGameDataOperation(identity, "Removing local game data…");
+    validationAttempt.current += 1;
 
     try {
+      await adapter.current!.removeGameData(identity);
       await storage.current!.removeGame(identity);
       setLastGame(null);
       setValidationError(null);
+      setStorageNotice(null);
+      if (removingSelectedGame) {
+        setSelectedGame(null);
+        setPlayer({
+          state: "empty",
+          frameLabel: "Choose a game to begin.",
+          runtimeError: null,
+        });
+      } else {
+        setPlayer((current) => ({
+          ...current,
+          state: selectedGame ? "ready" : "empty",
+          runtimeError: null,
+        }));
+      }
     } catch {
       setValidationError(
         "The saved game could not be removed from this browser.",
       );
+      setPlayer((current) => ({
+        ...current,
+        state: selectedGame ? "ready" : "empty",
+      }));
     } finally {
       setLastGameBusy(false);
+    }
+  }
+
+  async function clearLastGameData(): Promise<void> {
+    if (
+      !lastGame
+      || lastGameBusy
+      || !window.confirm(
+        `Clear saved progress for ${displayGameName(lastGame)}? This deletes `
+          + "only its Java ME save data. The cached game and player settings "
+          + "will stay available.",
+      )
+    ) {
+      return;
+    }
+
+    const identity = lastGame.identity;
+    beginGameDataOperation(identity, "Clearing saved progress…");
+
+    try {
+      await adapter.current!.clearGameData(identity);
+      await storage.current!.clearGameData(identity);
+      setStorageNotice(
+        `${displayGameName(lastGame)} saved progress was cleared. `
+          + "The cached game and player settings are still available.",
+      );
+      setPlayer((current) => ({
+        ...current,
+        state: selectedGame ? "ready" : "empty",
+        frameLabel: selectedGame
+          ? displayGameName(lastGame)
+          : "Choose a game to begin.",
+        runtimeError: null,
+      }));
+    } catch {
+      setValidationError(
+        "This game's saved progress could not be cleared.",
+      );
+      setPlayer((current) => ({
+        ...current,
+        state: selectedGame ? "ready" : "empty",
+      }));
+    } finally {
+      setLastGameBusy(false);
+    }
+  }
+
+  function beginGameDataOperation(
+    identity: string,
+    frameLabel: string,
+  ): void {
+    setLastGameBusy(true);
+    setValidationError(null);
+    setStorageNotice(null);
+    if (selectedGame?.identity === identity) {
+      releasePressedKeys();
+      setPlayer({
+        state: "loading-runtime",
+        frameLabel,
+        runtimeError: null,
+      });
     }
   }
 
@@ -515,15 +589,34 @@ export function PlayerShell() {
                   Resume last game
                 </button>
                 <button
+                  className="clear-game-data"
+                  type="button"
+                  disabled={
+                    !runtimeAvailable
+                    || lastGameBusy
+                    || player.state === "validating"
+                  }
+                  onClick={() => void clearLastGameData()}
+                >
+                  Clear game data
+                </button>
+                <button
                   className="remove-game"
                   type="button"
-                  disabled={lastGameBusy || player.state === "validating"}
+                  disabled={
+                    !runtimeAvailable
+                    || lastGameBusy
+                    || player.state === "validating"
+                  }
                   onClick={() => void removeLastGame()}
                 >
                   Remove game
                 </button>
               </div>
             </section>
+          )}
+          {storageNotice && (
+            <p className="storage-notice" role="status">{storageNotice}</p>
           )}
           {validationError && <p className="alert" role="alert">{validationError}</p>}
           {player.runtimeError && <p className="alert" role="alert">{player.runtimeError}</p>}

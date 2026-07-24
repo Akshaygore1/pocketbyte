@@ -130,6 +130,7 @@ h1 {
 
 .privacy-copy,
 .alert,
+.storage-notice,
 .saved-game-status {
   margin: 0.7rem 0 0;
   color: #8f9a9f;
@@ -139,6 +140,10 @@ h1 {
 
 .alert {
   color: #f3b8ad;
+}
+
+.storage-notice {
+  color: #a9c8b9;
 }
 
 .saved-game {
@@ -192,10 +197,16 @@ h1 {
   cursor: pointer;
 }
 
+.saved-game-actions .clear-game-data,
 .saved-game-actions .remove-game {
   color: #d5dcde;
   border-color: #4a555a;
   background: transparent;
+}
+
+.saved-game-actions .remove-game {
+  color: #f0b5aa;
+  border-color: #684841;
 }
 
 .saved-game-actions button:disabled {

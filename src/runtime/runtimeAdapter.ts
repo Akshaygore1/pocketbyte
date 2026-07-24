@@ -45,6 +45,8 @@ export interface RuntimeAdapter {
   mount(container: HTMLElement): void;
   launch(fixture: FixtureLaunch): Promise<void>;
   launchMidlet(midlet: MidletLaunch): Promise<void>;
+  clearGameData(identity: string): Promise<void>;
+  removeGameData(identity: string): Promise<void>;
   focus(): void;
   input(code: string, pressed: boolean): boolean;
   restart(resolution?: LogicalResolution): Promise<void>;
@@ -87,6 +89,12 @@ type FrameCommandDetails =
   | { type: "initialize" }
   | { type: "launch"; fixture: FixtureLaunch }
   | { type: "launch-midlet"; midlet: MidletLaunch }
+  | {
+      type: "manage-game-data";
+      action: "clear" | "remove";
+      identity: string;
+      requestId: string;
+    }
   | { type: "focus" }
   | { type: "input"; code: string; pressed: boolean }
   | { type: "restart" }
@@ -147,6 +155,10 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
   #lastFixture: FixtureLaunch | null = null;
   #lastMidlet: MidletLaunch | null = null;
   #restartPending = false;
+  #pendingGameDataOperations = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
   readonly #frameFactory: RuntimeFrameFactory;
   readonly #onMessage = (message: MessageEvent) => this.receive(message);
 
@@ -197,6 +209,14 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     this.command({ type: "launch-midlet", midlet });
   }
 
+  clearGameData(identity: string): Promise<void> {
+    return this.manageGameData("clear", identity);
+  }
+
+  removeGameData(identity: string): Promise<void> {
+    return this.manageGameData("remove", identity);
+  }
+
   focus(): void {
     this.command({ type: "focus" });
   }
@@ -237,6 +257,9 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
 
   destroy(): void {
     if (this.#destroyed) return;
+    this.rejectPendingGameDataOperations(
+      new Error("The runtime was closed before game data could be changed."),
+    );
     this.removeFrame();
     this.#destroyed = true;
     window.removeEventListener("message", this.#onMessage);
@@ -261,6 +284,40 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
       return;
     }
 
+    if (
+      message.data.type === "game-data-operation-complete"
+      && typeof message.data.requestId === "string"
+    ) {
+      const pending = this.#pendingGameDataOperations.get(
+        message.data.requestId,
+      );
+      if (pending) {
+        this.#pendingGameDataOperations.delete(message.data.requestId);
+        pending.resolve();
+      }
+      return;
+    }
+
+    if (
+      message.data.type === "game-data-operation-failed"
+      && typeof message.data.requestId === "string"
+    ) {
+      const pending = this.#pendingGameDataOperations.get(
+        message.data.requestId,
+      );
+      if (pending) {
+        this.#pendingGameDataOperations.delete(message.data.requestId);
+        pending.reject(
+          new Error(
+            typeof message.data.message === "string"
+              ? message.data.message
+              : "The runtime could not change this game's data.",
+          ),
+        );
+      }
+      return;
+    }
+
     const event = parseFrameEvent(message.data);
     if (!event) return;
 
@@ -281,6 +338,35 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
       { ...command, source: SHELL_SOURCE, session: this.#session } as FrameCommand,
       window.location.origin,
     );
+  }
+
+  private manageGameData(
+    action: "clear" | "remove",
+    identity: string,
+  ): Promise<void> {
+    if (this.#destroyed || !this.#frame?.contentWindow || !this.#session) {
+      return Promise.reject(new Error("The runtime is not available."));
+    }
+
+    this.#lastFixture = null;
+    this.#lastMidlet = null;
+    this.#restartPending = false;
+    const requestId = crypto.randomUUID();
+
+    return new Promise((resolve, reject) => {
+      this.#pendingGameDataOperations.set(requestId, { resolve, reject });
+      this.command({
+        type: "manage-game-data",
+        action,
+        identity,
+        requestId,
+      });
+    });
+  }
+
+  private rejectPendingGameDataOperations(error: Error): void {
+    this.#pendingGameDataOperations.forEach(({ reject }) => reject(error));
+    this.#pendingGameDataOperations.clear();
   }
 
   private removeFrame(): void {
