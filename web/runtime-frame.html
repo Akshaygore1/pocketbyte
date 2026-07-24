@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Java ME runtime frame</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #101820; color: #eef6ff; font-family: system-ui, sans-serif; }
+      #fixture { display: grid; height: 100%; place-items: center; text-align: center; }
+      canvas { image-rendering: pixelated; border: 2px solid #7de3a1; background: #172b38; }
+    </style>
+  </head>
+  <body>
+    <div id="fixture" hidden>
+      <canvas id="screen" width="240" height="320" aria-label="Redistributable smoke fixture rendered"></canvas>
+      <strong>Redistributable smoke fixture</strong>
+    </div>
+    <script type="module">
+      const SHELL_SOURCE = "handset-shell";
+      const FRAME_SOURCE = "freej2me-runtime-frame";
+      let session = null;
+      let fixture = null;
+      const post = (type, details = {}) => parent.postMessage({ source: FRAME_SOURCE, session, type, ...details }, location.origin);
+      const drawFixture = () => {
+        const canvas = document.querySelector("#screen");
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#172b38";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#7de3a1";
+        context.font = "bold 20px sans-serif";
+        context.fillText("FIXTURE READY", 34, 142);
+        context.font = "14px sans-serif";
+        context.fillText("adapter frame smoke test", 35, 174);
+      };
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin || event.source !== parent) return;
+        const command = event.data;
+        if (!command || command.source !== SHELL_SOURCE || typeof command.session !== "string") return;
+        session = command.session;
+        if (command.type === "initialize") post("runtime-ready");
+        if (command.type === "launch" && command.fixture?.id === "smoke-fixture") {
+          fixture = command.fixture;
+          post("launching", { fixtureName: fixture.name });
+          drawFixture();
+          document.querySelector("#fixture").hidden = false;
+          post("running", { fixtureName: fixture.name });
+        }
+        if (command.type === "restart" && fixture) {
+          post("restarting", { fixtureName: fixture.name });
+          drawFixture();
+          post("running", { fixtureName: fixture.name });
+        }
+        if (command.type === "focus") document.querySelector("#screen")?.focus();
+        if (command.type === "diagnostics") post("diagnostics", { message: "Fixture frame is ready for a CheerpJ runtime bridge." });
+        if (command.type === "teardown") document.querySelector("#fixture").hidden = true;
+      });
+    </script>
+  </body>
+</html>

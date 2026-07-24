@@ -86,6 +86,22 @@ npx serve -u web
 ## CheerpJ?
 freej2me-web currently works in the browser thanks to CheerpJ. However, since CheerpJ is proprietary, it introduces some limitations.. notably freej2me-web will not work without an internet connection, and it can be a little slow..
 
+### Product runtime boundary
+
+The React product shell communicates with its dedicated runtime iframe only through
+the typed lifecycle protocol in `src/runtime/runtimeAdapter.ts`. The current
+redistributable smoke fixture in `web/runtime-frame.html` proves this browser
+boundary without bundling any game bytes; a production FreeJ2ME launch bridge
+belongs inside that frame, not in React components.
+
+The checked and pinned CheerpJ Community loader is
+`https://cjrtnc.leaningtech.com/20260317_2978/loader.js` (see `web/run.html`).
+CheerpJ Community requires hosted runtime access and attribution. This project is
+client-only: user-selected games are not uploaded, but the CheerpJ runtime itself
+is fetched from Leaning Technologies' hosted service. Review the
+[CheerpJ Community License](https://cheerpj.com/licensing/) before changing the
+project's distribution or commercial use.
+
 However, freej2me-web intentionally doesn't use its more advanced features like AWT GUI support or wasm JNI modules. In theory it should be possible to port it to a simpler (but most likely slower) VM if CheerpJ stops being available... but it's not planned for now.
 
 ## Embedding
