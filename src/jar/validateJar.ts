@@ -150,7 +150,7 @@ export async function validateJarBytes(
     );
   }
 
-  if (metadata.mainClass && metadata.midlets.length === 0) {
+  if (metadata.mainClass) {
     throw new JarValidationError(
       "desktop-java",
       "This is a desktop Java archive, not a Java ME MIDlet suite.",

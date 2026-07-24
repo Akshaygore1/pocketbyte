@@ -35,10 +35,14 @@ describe("PlayerShell local JAR review", () => {
   it("shows validating and then reviewed metadata without launching guest code", async () => {
     const jar = validJar();
     const selected = deferredFile(jar);
+    const postMessage = vi.fn();
+    const runtimeWindow = { postMessage };
     vi.spyOn(HTMLIFrameElement.prototype, "contentWindow", "get").mockReturnValue({
-      postMessage: vi.fn(),
+      ...runtimeWindow,
     } as unknown as Window);
     render(<PlayerShell />);
+    fireEvent.load(screen.getByTitle("Java ME runtime"));
+    const initialize = postMessage.mock.calls[0][0] as { session: string };
 
     fireEvent.change(screen.getByLabelText("Choose a Java ME JAR"), {
       target: { files: [selected.file] },
@@ -46,6 +50,17 @@ describe("PlayerShell local JAR review", () => {
 
     expect(screen.getByText("validating", { exact: true })).toBeVisible();
     expect(screen.queryByText("Tiny Suite")).not.toBeInTheDocument();
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: runtimeWindow as unknown as MessageEventSource,
+      data: {
+        source: "freej2me-runtime-frame",
+        session: initialize.session,
+        type: "running",
+        fixtureName: "Stale fixture",
+      },
+    }));
+    expect(screen.getByText("validating", { exact: true })).toBeVisible();
 
     selected.release();
 

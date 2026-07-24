@@ -417,6 +417,19 @@ describe("validateJar", () => {
     });
   });
 
+  it("rejects desktop entry points even when a MIDlet is also declared", async () => {
+    const manifest = [
+      validManifest().trimEnd(),
+      "Main-Class: desktop.Main",
+      "",
+    ].join("\r\n");
+
+    await expect(validateJar(asFile(validJar(manifest)))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "desktop-java" },
+    });
+  });
+
   it("does not call a network boundary while validating local bytes", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
