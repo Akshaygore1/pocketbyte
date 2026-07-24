@@ -89,10 +89,10 @@ freej2me-web currently works in the browser thanks to CheerpJ. However, since Ch
 ### Product runtime boundary
 
 The React product shell communicates with its dedicated runtime iframe only through
-the typed lifecycle protocol in `src/runtime/runtimeAdapter.ts`. The current
-redistributable smoke fixture in `web/runtime-frame.html` proves this browser
-boundary without bundling any game bytes; a production FreeJ2ME launch bridge
-belongs inside that frame, not in React components.
+the typed lifecycle protocol in `src/runtime/runtimeAdapter.ts`. The
+redistributable MIDlet in `fixtures/runtime-smoke/` runs through FreeJ2ME-Web and
+CheerpJ inside `web/runtime-frame.html`, proving the engine boundary without
+coupling React components to emulator internals.
 
 The checked and pinned CheerpJ Community loader is
 `https://cjrtnc.leaningtech.com/20260317_2978/loader.js` (see `web/run.html`).

@@ -6,32 +6,68 @@
     <title>Java ME runtime frame</title>
     <style>
       html, body { height: 100%; margin: 0; background: #101820; color: #eef6ff; font-family: system-ui, sans-serif; }
-      #fixture { display: grid; height: 100%; place-items: center; text-align: center; }
-      canvas { image-rendering: pixelated; border: 2px solid #7de3a1; background: #172b38; }
+      #fixture { display: grid; grid-template-rows: 1fr auto; height: 100%; text-align: center; }
+      #engine { border: 0; height: 100%; width: 100%; }
+      #status { margin: 0; padding: 0.5rem; }
     </style>
   </head>
   <body>
     <div id="fixture" hidden>
-      <canvas id="screen" width="240" height="320" aria-label="Redistributable smoke fixture rendered"></canvas>
-      <strong>Redistributable smoke fixture</strong>
+      <iframe id="engine" title="FreeJ2ME-Web CheerpJ runtime"></iframe>
+      <p id="status">Redistributable smoke fixture</p>
     </div>
     <script type="module">
       const SHELL_SOURCE = "handset-shell";
       const FRAME_SOURCE = "freej2me-runtime-frame";
       let session = null;
       let fixture = null;
+      let readinessTimer = null;
       const post = (type, details = {}) => parent.postMessage({ source: FRAME_SOURCE, session, type, ...details }, location.origin);
-      const drawFixture = () => {
-        const canvas = document.querySelector("#screen");
-        const context = canvas.getContext("2d");
-        context.fillStyle = "#172b38";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        context.fillStyle = "#7de3a1";
-        context.font = "bold 20px sans-serif";
-        context.fillText("FIXTURE READY", 34, 142);
-        context.font = "14px sans-serif";
-        context.fillText("adapter frame smoke test", 35, 174);
+
+      const engine = document.querySelector("#engine");
+      const status = document.querySelector("#status");
+
+      const stopReadinessCheck = () => {
+        if (readinessTimer !== null) clearInterval(readinessTimer);
+        readinessTimer = null;
       };
+
+      const waitForRenderedFixture = () => {
+        stopReadinessCheck();
+        const startedAt = Date.now();
+        readinessTimer = setInterval(() => {
+          const canvas = engine.contentDocument?.querySelector("#display");
+          const rendered = canvas?.localName === "canvas"
+            && canvas.style.display !== "none"
+            && canvas.width > 0
+            && canvas.height > 0;
+
+          if (rendered) {
+            stopReadinessCheck();
+            engine.setAttribute(
+              "aria-label",
+              "Redistributable smoke fixture rendered",
+            );
+            status.textContent = fixture.name;
+            post("running", { fixtureName: fixture.name });
+          } else if (Date.now() - startedAt > 60_000) {
+            stopReadinessCheck();
+            post("failed", {
+              stage: "launching",
+              message: "The FreeJ2ME-Web fixture did not render in time.",
+            });
+          }
+        }, 100);
+      };
+
+      const launchFixture = () => {
+        document.querySelector("#fixture").hidden = false;
+        engine.removeAttribute("aria-label");
+        status.textContent = "Loading FreeJ2ME-Web and CheerpJ…";
+        engine.src = `/run.html?jar=runtime-smoke.jar&fractionScale=1&launch=${Date.now()}`;
+        engine.addEventListener("load", waitForRenderedFixture, { once: true });
+      };
+
       window.addEventListener("message", (event) => {
         if (event.origin !== location.origin || event.source !== parent) return;
         const command = event.data;
@@ -41,18 +77,34 @@
         if (command.type === "launch" && command.fixture?.id === "smoke-fixture") {
           fixture = command.fixture;
           post("launching", { fixtureName: fixture.name });
-          drawFixture();
-          document.querySelector("#fixture").hidden = false;
-          post("running", { fixtureName: fixture.name });
+          launchFixture();
         }
         if (command.type === "restart" && fixture) {
           post("restarting", { fixtureName: fixture.name });
-          drawFixture();
-          post("running", { fixtureName: fixture.name });
+          launchFixture();
         }
-        if (command.type === "focus") document.querySelector("#screen")?.focus();
-        if (command.type === "diagnostics") post("diagnostics", { message: "Fixture frame is ready for a CheerpJ runtime bridge." });
-        if (command.type === "teardown") document.querySelector("#fixture").hidden = true;
+        if (command.type === "focus") {
+          engine.contentDocument?.querySelector("#display")?.focus();
+        }
+        if (command.type === "input") {
+          const canvas = engine.contentDocument?.querySelector("#display");
+          const type = command.pressed ? "keydown" : "keyup";
+          canvas?.dispatchEvent(new KeyboardEvent(type, {
+            bubbles: true,
+            code: command.code,
+            key: command.code,
+          }));
+        }
+        if (command.type === "diagnostics") {
+          post("diagnostics", {
+            message: "Fixture uses FreeJ2ME-Web with the pinned hosted CheerpJ runtime.",
+          });
+        }
+        if (command.type === "teardown") {
+          stopReadinessCheck();
+          engine.src = "about:blank";
+          document.querySelector("#fixture").hidden = true;
+        }
       });
     </script>
   </body>
