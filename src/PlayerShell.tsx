@@ -623,7 +623,7 @@ export function PlayerShell() {
       <section className="player-copy" aria-labelledby="product-title">
         <div>
           <p className="eyebrow">Local Java ME player</p>
-          <h1 id="product-title">Handset</h1>
+          <h1 id="product-title">Java ME</h1>
           <p className="intro">
             Bring back a game from your own collection. It stays on this
             device, from inspection through play.
@@ -758,7 +758,7 @@ export function PlayerShell() {
         </section>
 
         <aside className="keyboard-legend" aria-label="Keyboard controls">
-          <p>Focus the phone, then play with your keyboard.</p>
+          <p>Focus the game display, then play with your keyboard.</p>
           <span><kbd>Q</kbd><kbd>W</kbd> soft keys</span>
           <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> move</span>
           <span><kbd>Enter</kbd> select</span>
@@ -770,7 +770,7 @@ export function PlayerShell() {
           ref={phone}
           className="phone"
           role="application"
-          aria-label="Java ME phone player. Focus to use keyboard controls."
+          aria-label="Java ME game display. Focus to use keyboard controls."
           tabIndex={0}
           onPointerDown={(event) => {
             event.preventDefault();
@@ -784,10 +784,6 @@ export function PlayerShell() {
           }}
           onBlur={releasePressedKeys}
         >
-          <div className="phone-cap">
-            <span className="earpiece" />
-            <span className="status-light" aria-hidden="true" />
-          </div>
           <div className="screen-bezel">
             <div className="screen-status">
               <span
@@ -802,12 +798,6 @@ export function PlayerShell() {
             <div className="runtime-viewport" ref={frameContainer}>
               <p className="runtime-label">{player.frameLabel}</p>
             </div>
-          </div>
-          <PhoneControls />
-          <div className="phone-foot" aria-hidden="true">
-            <span />
-            <span />
-            <span />
           </div>
         </div>
       </section>
@@ -887,53 +877,6 @@ function ResolutionControl({
         ))}
       </select>
       <p>Logical pixels. Display scaling keeps the original proportions.</p>
-    </div>
-  );
-}
-
-function PhoneControls() {
-  const digitKeys = [
-    ["1", ""],
-    ["2", "ABC"],
-    ["3", "DEF"],
-    ["4", "GHI"],
-    ["5", "JKL"],
-    ["6", "MNO"],
-    ["7", "PQRS"],
-    ["8", "TUV"],
-    ["9", "WXYZ"],
-    ["*", "E"],
-    ["0", "+"],
-    ["#", "R"],
-  ] as const;
-
-  return (
-    <div className="phone-controls" data-phone-control aria-hidden="true">
-      <div className="soft-key-row">
-        <div className="hardware-key soft-key">
-          <span className="key-cap">Q</span>
-          <span className="key-function">Left</span>
-        </div>
-        <div className="navigation-key">
-          <span className="nav-up">↑</span>
-          <span className="nav-left">←</span>
-          <span className="nav-center">Enter</span>
-          <span className="nav-right">→</span>
-          <span className="nav-down">↓</span>
-        </div>
-        <div className="hardware-key soft-key">
-          <span className="key-cap">W</span>
-          <span className="key-function">Right</span>
-        </div>
-      </div>
-      <div className="number-pad">
-        {digitKeys.map(([digit, letters]) => (
-          <div className="hardware-key digit-key" key={digit}>
-            <span className="key-cap">{digit}</span>
-            {letters && <span className="key-function">{letters}</span>}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

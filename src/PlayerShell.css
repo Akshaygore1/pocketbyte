@@ -34,10 +34,10 @@ label {
 
   min-height: 100svh;
   display: grid;
-  grid-template-columns: minmax(18rem, 30rem) minmax(22rem, 1fr);
+  grid-template-columns: minmax(18rem, 27rem) minmax(32rem, 1fr);
   align-items: center;
-  gap: clamp(2rem, 6vw, 7rem);
-  max-width: 82rem;
+  gap: clamp(2rem, 4vw, 5rem);
+  max-width: 112rem;
   margin: 0 auto;
   padding: var(--shell-gutter);
 }
@@ -371,31 +371,32 @@ kbd {
   display: grid;
   place-items: center;
   min-width: 0;
+  width: 100%;
 }
 
 .phone {
   position: relative;
   width: min(
-    24rem,
-    calc((100svh - var(--shell-gutter) - var(--shell-gutter)) * 0.51),
+    100%,
+    calc((100svh - var(--shell-gutter) - var(--shell-gutter)) * 1.6),
     100%
   );
-  aspect-ratio: 0.51;
+  aspect-ratio: 16 / 10;
   display: grid;
-  grid-template-rows: 4.2% 41% 1fr 3.5%;
-  padding: 2.4% 5.5% 1.8%;
+  grid-template-rows: 1fr;
+  padding: clamp(0.65rem, 1.2vw, 1.15rem);
   overflow: hidden;
   color: #e8ecee;
   outline: none;
   border: 1px solid #4a5053;
-  border-radius: 12% 12% 15% 15% / 6% 6% 8% 8%;
+  border-radius: clamp(0.9rem, 1.8vw, 1.6rem);
   background:
-    linear-gradient(100deg, transparent 0 7%, rgba(255, 255, 255, 0.04) 8%, transparent 15%),
-    linear-gradient(145deg, #32373a 0%, #16191b 48%, #25292b 100%);
+    linear-gradient(120deg, rgba(255, 255, 255, 0.06), transparent 18%),
+    linear-gradient(145deg, #32373a 0%, #16191b 55%, #25292b 100%);
   box-shadow:
-    inset 0 0 0 0.25rem #111416,
-    inset 0 0 0 0.33rem #454a4c,
-    0 2.5rem 4rem rgba(0, 0, 0, 0.54);
+    inset 0 0 0 0.2rem #111416,
+    inset 0 0 0 0.28rem #454a4c,
+    0 2rem 4rem rgba(0, 0, 0, 0.46);
   isolation: isolate;
 }
 
@@ -411,44 +412,19 @@ kbd {
 
 .phone:focus-visible {
   box-shadow:
-    inset 0 0 0 0.25rem #111416,
-    inset 0 0 0 0.33rem #6e7679,
+    inset 0 0 0 0.2rem #111416,
+    inset 0 0 0 0.28rem #6e7679,
     0 0 0 0.2rem #d9a94f,
-    0 2.5rem 4rem rgba(0, 0, 0, 0.54);
-}
-
-.phone-cap {
-  position: relative;
-  display: grid;
-  place-items: center;
-}
-
-.earpiece {
-  width: 24%;
-  height: 0.3rem;
-  border-radius: 99rem;
-  background: repeating-linear-gradient(90deg, #080a0b 0 0.11rem, #303537 0.11rem 0.2rem);
-  box-shadow: inset 0 0.08rem 0.1rem #000;
-}
-
-.status-light {
-  position: absolute;
-  top: 35%;
-  right: 10%;
-  width: 0.28rem;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: #d9a94f;
-  box-shadow: 0 0 0.5rem rgba(217, 169, 79, 0.7);
+    0 2rem 4rem rgba(0, 0, 0, 0.46);
 }
 
 .screen-bezel {
   min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr;
-  padding: 4.5% 4.5% 5%;
+  padding: clamp(0.65rem, 1.25vw, 1.15rem);
   border: 1px solid #080a0b;
-  border-radius: 3% 3% 6% 6% / 3% 3% 5% 5%;
+  border-radius: clamp(0.55rem, 1vw, 0.9rem);
   background: #090b0c;
   box-shadow:
     inset 0 0 0 0.18rem #202426,
@@ -460,7 +436,7 @@ kbd {
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 0.35rem;
-  min-height: 1.35rem;
+  min-height: clamp(1.7rem, 3vw, 2.35rem);
   color: #94a1a6;
   font: 700 clamp(0.48rem, 1.4vh, 0.65rem)/1 "Arial Narrow", sans-serif;
   letter-spacing: 0.08em;
@@ -500,6 +476,7 @@ kbd {
   box-shadow:
     inset 0 0 1.4rem rgba(0, 0, 0, 0.85),
     0 0 1.2rem rgba(202, 162, 85, 0.08);
+  border-radius: 0.35rem;
 }
 
 .runtime-viewport iframe[data-runtime-frame] {
@@ -518,112 +495,6 @@ kbd {
   text-align: center;
   font-size: clamp(0.55rem, 1.5vh, 0.72rem);
   line-height: 1.5;
-}
-
-.phone-controls {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: 34% 1fr;
-  gap: 3%;
-  padding: 5% 3% 1%;
-  user-select: none;
-  pointer-events: none;
-}
-
-.soft-key-row {
-  display: grid;
-  grid-template-columns: 1fr 1.75fr 1fr;
-  align-items: center;
-  gap: 5%;
-}
-
-.hardware-key {
-  display: grid;
-  place-content: center;
-  text-align: center;
-  color: #e2e5e6;
-  border: 1px solid #4a5053;
-  background: linear-gradient(#383d3f, #1a1d1f);
-  box-shadow:
-    inset 0 0.08rem 0.12rem rgba(255, 255, 255, 0.09),
-    0 0.18rem 0.25rem rgba(0, 0, 0, 0.46);
-}
-
-.soft-key {
-  width: 100%;
-  height: 46%;
-  border-radius: 50% 50% 42% 42% / 70% 70% 42% 42%;
-}
-
-.key-cap {
-  font: 700 clamp(0.65rem, 2vh, 0.9rem)/1 "Arial Narrow", sans-serif;
-}
-
-.key-function {
-  margin-top: 0.15rem;
-  color: #9da7aa;
-  font: 700 clamp(0.38rem, 1vh, 0.5rem)/1 "Arial Narrow", sans-serif;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
-.navigation-key {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 1.48;
-  color: #c9cfd1;
-  border: 1px solid #555b5e;
-  border-radius: 50%;
-  background:
-    radial-gradient(ellipse at center, #181b1d 0 29%, transparent 30%),
-    conic-gradient(from 45deg, #2e3335, #1b1e20, #353a3c, #1b1e20, #2e3335);
-  box-shadow:
-    inset 0 0 0 0.35rem #131617,
-    0 0.25rem 0.45rem rgba(0, 0, 0, 0.5);
-  font: 700 clamp(0.55rem, 1.7vh, 0.75rem)/1 "Arial Narrow", sans-serif;
-}
-
-.navigation-key span {
-  position: absolute;
-}
-
-.nav-up { top: 9%; left: 50%; transform: translateX(-50%); }
-.nav-down { bottom: 9%; left: 50%; transform: translateX(-50%); }
-.nav-left { left: 9%; top: 50%; transform: translateY(-50%); }
-.nav-right { right: 9%; top: 50%; transform: translateY(-50%); }
-.nav-center {
-  inset: 30% 25%;
-  display: grid;
-  place-items: center;
-  color: #d9a94f;
-  font-size: clamp(0.42rem, 1.1vh, 0.56rem);
-}
-
-.number-pad {
-  min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(4, 1fr);
-  gap: 4% 7%;
-}
-
-.digit-key {
-  min-height: 0;
-  border-radius: 45% 45% 38% 38% / 50% 50% 35% 35%;
-}
-
-.phone-foot {
-  display: flex;
-  justify-content: center;
-  align-items: end;
-  gap: 0.22rem;
-}
-
-.phone-foot span {
-  width: 0.15rem;
-  height: 0.15rem;
-  border-radius: 50%;
-  background: #080a0b;
 }
 
 .jar-review {
@@ -675,7 +546,7 @@ kbd {
   margin-left: 0.45rem;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 980px) {
   .player-shell {
     grid-template-columns: 1fr;
     align-items: start;
@@ -686,11 +557,7 @@ kbd {
   }
 
   .phone {
-    width: min(
-      22rem,
-      calc((100svh - var(--shell-gutter) - var(--shell-gutter)) * 0.51),
-      100%
-    );
+    width: 100%;
   }
 
   .player-copy {

@@ -102,6 +102,13 @@ is fetched from Leaning Technologies' hosted service. Review the
 [CheerpJ Community License](https://cheerpj.com/licensing/) before changing the
 project's distribution or commercial use.
 
+Guest Java ME networking is offline-only: the checked-in Java ME `Connector`
+shim rejects HTTP, HTTPS, socket, and datagram connections before they can
+reach browser networking. This does not prevent the host page from fetching the
+pinned CheerpJ runtime assets needed to run the emulator. See
+[`docs/security/guest-network-denial.md`](docs/security/guest-network-denial.md)
+for the boundary and verification plan.
+
 However, freej2me-web intentionally doesn't use its more advanced features like AWT GUI support or wasm JNI modules. In theory it should be possible to port it to a simpler (but most likely slower) VM if CheerpJ stops being available... but it's not planned for now.
 
 ## Embedding
