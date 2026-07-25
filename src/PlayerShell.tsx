@@ -48,6 +48,8 @@ interface AudioView {
   notice: string | null;
 }
 
+type OpenTool = "upload" | "saved" | "resolution" | "details" | null;
+
 function initialAudioView(muted: boolean): AudioView {
   return {
     status: "uninitialized",
@@ -163,6 +165,7 @@ export function PlayerShell() {
   const [resolution, setResolution] =
     useState<LogicalResolution>(DEFAULT_RESOLUTION);
   const [audio, setAudio] = useState<AudioView>(() => initialAudioView(false));
+  const [openTool, setOpenTool] = useState<OpenTool>("upload");
 
   useEffect(() => {
     const gameStorage = createGameStorage();
@@ -356,6 +359,7 @@ export function PlayerShell() {
       muted: game.muted,
     };
     await adapter.current?.launchMidlet(launch);
+    setOpenTool(null);
   }
 
   async function resumeLastGame(): Promise<void> {
@@ -435,6 +439,7 @@ export function PlayerShell() {
       setStorageNotice(null);
       if (removingSelectedGame) {
         setSelectedGame(null);
+        setOpenTool("upload");
         setPlayer({
           state: "empty",
           frameLabel: "Choose a game to begin.",
@@ -618,238 +623,373 @@ export function PlayerShell() {
     pressedKeys.current.clear();
   }
 
-  return (
-    <main className="player-shell">
-      <section className="player-copy" aria-labelledby="product-title">
-        <div>
-          <p className="eyebrow">Local Java ME player</p>
-          <h1 id="product-title">Java ME</h1>
-          <p className="intro">
-            Bring back a game from your own collection. It stays on this
-            device, from inspection through play.
-          </p>
-        </div>
+  function toggleTool(tool: Exclude<OpenTool, null>): void {
+    setOpenTool((current) => current === tool ? null : tool);
+  }
 
-        <section className="game-loader" aria-labelledby="local-jar-heading">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">Game cartridge</p>
-              <h2 id="local-jar-heading">Choose a game</h2>
-            </div>
-            <span className="privacy-mark">On-device</span>
-          </div>
-          <label className="file-picker">
-            <span>Choose a Java ME JAR</span>
-            <input
-              type="file"
-              accept=".jar,application/java-archive"
-              disabled={player.state === "validating"}
-              onChange={(event) =>
-                void inspectSelectedJar(event.currentTarget.files?.[0])}
+  const audioNeedsInitialization =
+    audio.status === "uninitialized" || audio.status === "unavailable";
+  const audioLabel = audio.status === "initializing"
+    ? "Audio initializing"
+    : audio.status === "unavailable"
+      ? "Audio unavailable"
+      : audioNeedsInitialization
+        ? "Enable audio"
+        : audio.muted
+          ? "Unmute audio"
+          : "Mute audio";
+
+  const gameStage = (
+    <section className="phone-stage" aria-label="Emulator display">
+      <div
+        ref={phone}
+        className="phone"
+        role="application"
+        aria-label="Java ME game display. Focus to use keyboard controls."
+        tabIndex={0}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          phone.current?.focus();
+        }}
+        onKeyDown={(event) => {
+          if (sendKey(event.code, true)) event.preventDefault();
+        }}
+        onKeyUp={(event) => {
+          if (sendKey(event.code, false)) event.preventDefault();
+        }}
+        onBlur={releasePressedKeys}
+      >
+        <div className="screen-bezel">
+          <div className="screen-status">
+            <span
+              className={`state-indicator state-${player.state}`}
+              aria-hidden="true"
             />
-          </label>
-          <p className="privacy-copy">
-            Your selected game stays in this browser and is not uploaded.
-          </p>
-          {lastGameLoading && (
-            <p className="saved-game-status">Checking for your last game…</p>
-          )}
-          {!lastGameLoading && lastGame && (
-            <section className="saved-game" aria-labelledby="saved-game-heading">
-              <div>
-                <p className="section-kicker">Last played</p>
-                <h3 id="saved-game-heading">{displayGameName(lastGame)}</h3>
-                <p>
-                  {lastGame.selectedMidlet?.name ?? "Choose a MIDlet"}
-                  {" · "}
-                  {lastGame.settings.resolution.width}×
-                  {lastGame.settings.resolution.height}
-                </p>
-              </div>
-              <div className="saved-game-actions">
-                <button
-                  type="button"
-                  disabled={
-                    !runtimeAvailable
-                    || lastGameBusy
-                    || selectedGame?.identity === lastGame.identity
-                    || ["validating", "loading-runtime", "launching", "running", "restarting"]
-                      .includes(player.state)
-                  }
-                  onClick={() => void resumeLastGame()}
-                >
-                  Resume last game
-                </button>
-                <button
-                  className="clear-game-data"
-                  type="button"
-                  disabled={
-                    !runtimeAvailable
-                    || lastGameBusy
-                    || player.state === "validating"
-                  }
-                  onClick={() => void clearLastGameData()}
-                >
-                  Clear game data
-                </button>
-                <button
-                  className="remove-game"
-                  type="button"
-                  disabled={
-                    !runtimeAvailable
-                    || lastGameBusy
-                    || player.state === "validating"
-                  }
-                  onClick={() => void removeLastGame()}
-                >
-                  Remove game
-                </button>
-              </div>
-            </section>
-          )}
-          {storageNotice && (
-            <p className="storage-notice" role="status">{storageNotice}</p>
-          )}
+            <span data-player-state={player.state} aria-live="polite">
+              {player.state.replace("-", " ")}
+            </span>
+            <span className="screen-clock" aria-hidden="true">
+              {resolution.width}×{resolution.height}
+            </span>
+          </div>
+          <div className="runtime-viewport" ref={frameContainer}>
+            <p className="runtime-label">{player.frameLabel}</p>
+          </div>
+        </div>
+      </div>
+      <div className="stage-footer">
+        <span>{selectedGame?.review.suiteName ?? selectedGame?.sourceFileName ?? "No cartridge"}</span>
+        <span aria-live="polite">
+          {audio.notice ?? "Focus display · Q/W soft keys · Arrows move · Enter select"}
+        </span>
+      </div>
+      {player.runtimeError && <p className="runtime-alert" role="alert">{player.runtimeError}</p>}
+      {(storageNotice || validationError) && !openTool && (
+        <div className="stage-messages">
+          {storageNotice && <p className="storage-notice" role="status">{storageNotice}</p>}
           {validationError && <p className="alert" role="alert">{validationError}</p>}
-          {player.runtimeError && <p className="alert" role="alert">{player.runtimeError}</p>}
-          {selectedGame && (
-            <>
-              <ResolutionControl
-                resolution={resolution}
-                disabled={[
-                  "loading-runtime",
-                  "launching",
-                  "restarting",
-                ].includes(player.state)}
-                onChange={changeResolution}
-              />
-              <AudioControl
-                audio={audio}
-                disabled={
-                  player.state !== "running"
-                  || audio.status === "initializing"
-                }
-                onInitialize={() => void initializeAudio()}
-                onMutedChange={changeMuted}
-              />
-              <JarMetadataReview
-                game={selectedGame}
-                state={player.state}
-                onLaunch={(midlet) => void launchMidlet(selectedGame, midlet)}
-              />
-            </>
+        </div>
+      )}
+    </section>
+  );
+
+  return (
+    <main className={`player-shell${openTool ? " tool-is-open" : ""}`}>
+      {gameStage}
+      <nav className="tool-rail" aria-label="Player tools">
+        <div className="device-mark" aria-label="J2ME local player">
+          <span>J2ME</span>
+          <small>Local player</small>
+        </div>
+        <div className="tool-buttons">
+          <ToolButton
+            icon="cartridge"
+            label="Load game"
+            active={openTool === "upload"}
+            onClick={() => toggleTool("upload")}
+          />
+          <ToolButton
+            icon="save"
+            label="Saved game"
+            active={openTool === "saved"}
+            indicator={Boolean(lastGame)}
+            onClick={() => toggleTool("saved")}
+          />
+          <ToolButton
+            icon={
+              audio.status === "unavailable"
+                ? "audio-off"
+                : audio.muted
+                  ? "muted"
+                  : audio.status === "ready"
+                    ? "audio"
+                    : "audio-idle"
+            }
+            label={audioLabel}
+            state={audio.status}
+            disabled={player.state !== "running" || audio.status === "initializing"}
+            pressed={!audioNeedsInitialization ? audio.muted : undefined}
+            onClick={() => {
+              if (audioNeedsInitialization) void initializeAudio();
+              else changeMuted(!audio.muted);
+            }}
+          />
+          <ToolButton
+            icon="resolution"
+            label="Display size"
+            active={openTool === "resolution"}
+            disabled={!selectedGame}
+            onClick={() => toggleTool("resolution")}
+          />
+          <ToolButton
+            icon="info"
+            label="Game details"
+            active={openTool === "details"}
+            disabled={!selectedGame}
+            onClick={() => toggleTool("details")}
+          />
+        </div>
+      </nav>
+
+      {openTool && (
+        <aside className="tool-panel" aria-label={`${openTool} panel`}>
+          <div className="panel-heading">
+            <div>
+              <p className="section-kicker">Cartridge bay</p>
+              <h2>{toolTitle(openTool)}</h2>
+            </div>
+            <button
+              className="panel-close"
+              type="button"
+              aria-label="Close tool panel"
+              onClick={() => setOpenTool(null)}
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+
+          {openTool === "upload" && (
+            <div className="panel-content">
+              <label className="file-picker">
+                <Icon name="cartridge" />
+                <span>
+                  <strong>{player.state === "validating" ? "Checking JAR…" : "Insert JAR"}</strong>
+                  <small>.jar files</small>
+                </span>
+                <input
+                  type="file"
+                  accept=".jar,application/java-archive"
+                  disabled={player.state === "validating"}
+                  onChange={(event) =>
+                    void inspectSelectedJar(event.currentTarget.files?.[0])}
+                />
+              </label>
+              <p className="privacy-copy">
+                On-device only. Your game is inspected and stored in this browser, never uploaded.
+              </p>
+              <button
+                className="fixture-launch"
+                type="button"
+                disabled={player.state !== "empty"}
+                onClick={() => {
+                  setOpenTool(null);
+                  void adapter.current?.launch(fixture);
+                }}
+              >
+                Open audio fixture
+              </button>
+            </div>
           )}
-          <button
-            className="fixture-launch"
-            type="button"
-            disabled={player.state !== "empty"}
-            onClick={() => void adapter.current?.launch(fixture)}
-          >
-            Launch audio fixture
-          </button>
-          {!selectedGame && player.state === "running" && (
-            <AudioControl
-              audio={audio}
-              disabled={audio.status === "initializing"}
-              onInitialize={() => void initializeAudio()}
-              onMutedChange={changeMuted}
+
+          {openTool === "saved" && (
+            <div className="panel-content">
+              {lastGameLoading && <p className="empty-panel">Reading local save…</p>}
+              {!lastGameLoading && !lastGame && (
+                <p className="empty-panel">No cartridge is saved yet.</p>
+              )}
+              {!lastGameLoading && lastGame && (
+                <section className="saved-game" aria-labelledby="saved-game-heading">
+                  <div className="saved-game-copy">
+                    <p className="section-kicker">Last played</p>
+                    <h3 id="saved-game-heading">{displayGameName(lastGame)}</h3>
+                    <p>
+                      {lastGame.selectedMidlet?.name ?? "MIDlet not selected"}
+                      {" · "}{lastGame.settings.resolution.width}×{lastGame.settings.resolution.height}
+                    </p>
+                  </div>
+                  <div className="saved-game-actions">
+                    <button
+                      type="button"
+                      disabled={
+                        !runtimeAvailable || lastGameBusy
+                        || selectedGame?.identity === lastGame.identity
+                        || ["validating", "loading-runtime", "launching", "running", "restarting"]
+                          .includes(player.state)
+                      }
+                      onClick={() => void resumeLastGame()}
+                    >
+                      Resume
+                    </button>
+                    <button
+                      className="clear-game-data"
+                      type="button"
+                      disabled={!runtimeAvailable || lastGameBusy || player.state === "validating"}
+                      onClick={() => void clearLastGameData()}
+                    >
+                      Clear progress
+                    </button>
+                    <div className="danger-zone">
+                      <p>Deletes the cartridge, settings, and save data.</p>
+                      <button
+                        className="remove-game"
+                        type="button"
+                        disabled={!runtimeAvailable || lastGameBusy || player.state === "validating"}
+                        onClick={() => void removeLastGame()}
+                      >
+                        Remove game
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+
+          {openTool === "resolution" && selectedGame && (
+            <ResolutionControl
+              resolution={resolution}
+              disabled={["loading-runtime", "launching", "restarting"].includes(player.state)}
+              onChange={changeResolution}
             />
           )}
-        </section>
 
-        <aside className="keyboard-legend" aria-label="Keyboard controls">
-          <p>Focus the game display, then play with your keyboard.</p>
-          <span><kbd>Q</kbd><kbd>W</kbd> soft keys</span>
-          <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> move</span>
-          <span><kbd>Enter</kbd> select</span>
+          {openTool === "details" && selectedGame && (
+            <JarMetadataReview
+              game={selectedGame}
+              state={player.state}
+              onLaunch={(midlet) => void launchMidlet(selectedGame, midlet)}
+            />
+          )}
+
+          {storageNotice && <p className="storage-notice" role="status">{storageNotice}</p>}
+          {validationError && <p className="alert" role="alert">{validationError}</p>}
         </aside>
-      </section>
+      )}
 
-      <section className="phone-stage" aria-label="Emulator display">
-        <div
-          ref={phone}
-          className="phone"
-          role="application"
-          aria-label="Java ME game display. Focus to use keyboard controls."
-          tabIndex={0}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            phone.current?.focus();
-          }}
-          onKeyDown={(event) => {
-            if (sendKey(event.code, true)) event.preventDefault();
-          }}
-          onKeyUp={(event) => {
-            if (sendKey(event.code, false)) event.preventDefault();
-          }}
-          onBlur={releasePressedKeys}
-        >
-          <div className="screen-bezel">
-            <div className="screen-status">
-              <span
-                className={`state-indicator state-${player.state}`}
-                aria-hidden="true"
-              />
-              <span data-player-state={player.state} aria-live="polite">
-                {player.state.replace("-", " ")}
-              </span>
-              <span className="screen-clock" aria-hidden="true">J2ME</span>
-            </div>
-            <div className="runtime-viewport" ref={frameContainer}>
-              <p className="runtime-label">{player.frameLabel}</p>
-            </div>
-          </div>
-        </div>
-      </section>
     </main>
   );
 }
 
-function AudioControl({
-  audio,
-  disabled,
-  onInitialize,
-  onMutedChange,
+type IconName =
+  | "audio"
+  | "audio-idle"
+  | "audio-off"
+  | "cartridge"
+  | "close"
+  | "info"
+  | "muted"
+  | "resolution"
+  | "save";
+
+function ToolButton({
+  icon,
+  label,
+  active = false,
+  indicator = false,
+  disabled = false,
+  pressed,
+  state,
+  onClick,
 }: {
-  audio: AudioView;
-  disabled: boolean;
-  onInitialize: () => void;
-  onMutedChange: (muted: boolean) => void;
+  icon: IconName;
+  label: string;
+  active?: boolean;
+  indicator?: boolean;
+  disabled?: boolean;
+  pressed?: boolean;
+  state?: AudioView["status"];
+  onClick: () => void;
 }) {
-  const needsInitialization =
-    audio.status === "uninitialized" || audio.status === "unavailable";
+  return (
+    <button
+      className={`tool-button${active ? " is-active" : ""}`}
+      type="button"
+      aria-label={label}
+      aria-expanded={active || undefined}
+      aria-pressed={pressed}
+      aria-disabled={disabled || undefined}
+      data-tooltip={label}
+      data-tool-state={state}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+    >
+      <Icon name={icon} />
+      <span className="tool-label" aria-hidden="true">{shortToolLabel(icon)}</span>
+      {indicator && <span className="tool-indicator" aria-hidden="true" />}
+    </button>
+  );
+}
+
+function Icon({ name }: { name: IconName }) {
+  const common = {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.75,
+    strokeLinecap: "square" as const,
+    strokeLinejoin: "miter" as const,
+  };
 
   return (
-    <div className="audio-control">
-      <div>
-        <span className="audio-label">Game audio</span>
-        <p aria-live="polite">
-          {audio.notice
-            ?? "Start audio with a player gesture after the game is running."}
-        </p>
-      </div>
-      <button
-        type="button"
-        disabled={disabled}
-        aria-pressed={needsInitialization ? undefined : audio.muted}
-        onClick={() => {
-          if (needsInitialization) {
-            onInitialize();
-          } else {
-            onMutedChange(!audio.muted);
-          }
-        }}
-      >
-        {audio.status === "initializing"
-          ? "Starting…"
-          : needsInitialization
-            ? "Enable audio"
-            : audio.muted
-              ? "Unmute"
-              : "Mute"}
-      </button>
-    </div>
+    <svg className="tool-icon" viewBox="0 0 24 24" aria-hidden="true">
+      {name === "cartridge" && <>
+        <path {...common} d="M5 3.5h12l2 2V21H5z" />
+        <path {...common} d="M8 3.5v4h7v-4M8 17.5h8M9 21v-3.5M12 21v-3.5M15 21v-3.5" />
+      </>}
+      {name === "save" && <>
+        <path {...common} d="M4 4h13l3 3v13H4z" />
+        <path {...common} d="M8 4v6h8V4M8 20v-6h8v6" />
+      </>}
+      {name === "resolution" && <>
+        <rect {...common} x="3.5" y="5" width="17" height="14" />
+        <path {...common} d="M7 9V7h2M15 7h2v2M17 15v2h-2M9 17H7v-2" />
+      </>}
+      {name === "info" && <>
+        <circle {...common} cx="12" cy="12" r="8.5" />
+        <path {...common} d="M12 10.5V17M12 7v.5" />
+      </>}
+      {(name === "audio" || name === "audio-idle" || name === "muted" || name === "audio-off") && <>
+        <path {...common} d="M4 10h4l4-4v12l-4-4H4z" />
+        {name === "audio" && <path {...common} d="M15 9a4 4 0 010 6M17.5 6.5a7.5 7.5 0 010 11" />}
+        {name === "muted" && <path {...common} d="M15 10l5 5M20 10l-5 5" />}
+        {name === "audio-off" && <path {...common} d="M4 4l16 16" />}
+      </>}
+      {name === "close" && <path {...common} d="M5 5l14 14M19 5L5 19" />}
+    </svg>
   );
+}
+
+function shortToolLabel(icon: IconName): string {
+  return TOOL_LABELS[icon];
+}
+
+const TOOL_LABELS: Record<IconName, string> = {
+  audio: "AUDIO",
+  "audio-idle": "AUDIO",
+  "audio-off": "AUDIO",
+  cartridge: "JAR",
+  close: "CLOSE",
+  info: "INFO",
+  muted: "AUDIO",
+  resolution: "SIZE",
+  save: "SAVE",
+};
+
+function toolTitle(tool: Exclude<OpenTool, null>): string {
+  if (tool === "upload") return "Load game";
+  if (tool === "saved") return "Saved game";
+  if (tool === "resolution") return "Display size";
+  return "Game details";
 }
 
 function ResolutionControl({
