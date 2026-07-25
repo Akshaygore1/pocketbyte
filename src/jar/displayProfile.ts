@@ -193,9 +193,14 @@ function detectArtworkSize(
   pngHints: readonly PngDisplayHint[],
   touchSupported: boolean,
 ): DetectedDisplayProfile | null {
-  // Landscape artwork is deliberately excluded: a horizontal splash image is
-  // not evidence that the game's logical screen or output should be rotated.
-  const portraitHints = pngHints.filter(({ width, height }) => height >= width);
+  // Splash, title, and icon artwork is not evidence of the logical screen.
+  // Landscape artwork is also deliberately excluded rather than interpreted
+  // as a signal that the game's output should be rotated.
+  const portraitHints = pngHints.filter(({ path, width, height }) =>
+    height >= width
+    && !/(?:^|[/_.-])(?:icon|intro|loading|logo|splash|title)(?:[/_.-]|$)/i
+      .test(path),
+  );
   if (portraitHints.length === 0) return null;
 
   const counts = new Map<string, { hint: PngDisplayHint; count: number }>();
@@ -204,18 +209,25 @@ function detectArtworkSize(
     const current = counts.get(key);
     counts.set(key, { hint, count: (current?.count ?? 0) + 1 });
   });
-  // Touch suites commonly target full-screen handsets, so matching larger
-  // artwork is stronger evidence than the number of same-sized assets.
   const best = Array.from(counts.values()).sort((left, right) => {
     const areaDifference = right.hint.width * right.hint.height
       - left.hint.width * left.hint.height;
-    return touchSupported
-      ? areaDifference || right.count - left.count
-      : right.count - left.count || areaDifference;
-  })[0].hint;
+    return right.count - left.count || -areaDifference;
+  })[0];
+
+  // A single full-screen image may be a splash with no relationship to the
+  // Canvas size. Require corroborating artwork before departing from the safe
+  // default; 240×320 remains useful even when it appears only once.
+  if (
+    best.count < 2
+    && (best.hint.width !== DEFAULT_DISPLAY_RESOLUTION.width
+      || best.hint.height !== DEFAULT_DISPLAY_RESOLUTION.height)
+  ) {
+    return null;
+  }
 
   return {
-    resolution: { width: best.width, height: best.height },
+    resolution: { width: best.hint.width, height: best.hint.height },
     confidence: "low",
     source: touchSupported
       ? "touch and PNG artwork"
