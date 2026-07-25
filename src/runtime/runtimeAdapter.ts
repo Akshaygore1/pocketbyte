@@ -36,8 +36,11 @@ export interface MidletLaunch {
   className: string;
   jarBytes: Uint8Array;
   resolution: LogicalResolution;
+  rotation: GameRotation;
   muted: boolean;
 }
+
+export type GameRotation = "none" | "counterclockwise";
 
 export interface LogicalResolution {
   width: number;
@@ -55,7 +58,9 @@ export interface RuntimeAdapter {
   setMuted(muted: boolean): void;
   focus(): void;
   input(code: string, pressed: boolean): boolean;
-  restart(resolution?: LogicalResolution): Promise<void>;
+  restart(
+    display?: Pick<MidletLaunch, "resolution" | "rotation">,
+  ): Promise<void>;
   reset(): void;
   diagnostics(): void;
   destroy(): void;
@@ -257,12 +262,14 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
     return true;
   }
 
-  async restart(resolution?: LogicalResolution): Promise<void> {
+  async restart(
+    display?: Pick<MidletLaunch, "resolution" | "rotation">,
+  ): Promise<void> {
     const launchName = this.#lastMidlet?.name ?? this.#lastFixture?.name;
     if (!launchName) return;
 
-    if (this.#lastMidlet && resolution) {
-      this.#lastMidlet = { ...this.#lastMidlet, resolution };
+    if (this.#lastMidlet && display) {
+      this.#lastMidlet = { ...this.#lastMidlet, ...display };
     }
 
     this.emit({ type: "restarting", fixtureName: launchName });

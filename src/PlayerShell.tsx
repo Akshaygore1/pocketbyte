@@ -2,12 +2,17 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   CheerpJFrameRuntimeAdapter,
+  type GameRotation,
   type LogicalResolution,
   type MidletLaunch,
   type PlayerLifecycleState,
   type RuntimeLifecycleEvent,
 } from "./runtime/runtimeAdapter";
 import { readValidatedJarResource } from "./jar/validateJar";
+import {
+  DEFAULT_DISPLAY_RESOLUTION,
+  SUPPORTED_DISPLAY_RESOLUTIONS,
+} from "./jar/displayProfile";
 import {
   createGameStorage,
   type CachedGame,
@@ -17,15 +22,8 @@ import { validateJar, type JarReview } from "./validation/validateJar";
 import "./PlayerShell.css";
 
 const fixture = { id: "smoke-fixture", name: "Redistributable audio fixture" };
-const RESOLUTION_PRESETS = [
-  { width: 128, height: 160 },
-  { width: 176, height: 208 },
-  { width: 240, height: 320 },
-  { width: 320, height: 240 },
-  { width: 360, height: 640 },
-  { width: 480, height: 800 },
-] as const satisfies readonly LogicalResolution[];
-const DEFAULT_RESOLUTION: LogicalResolution = RESOLUTION_PRESETS[5];
+const RESOLUTION_PRESETS = SUPPORTED_DISPLAY_RESOLUTIONS;
+const DEFAULT_RESOLUTION: LogicalResolution = DEFAULT_DISPLAY_RESOLUTION;
 
 interface PlayerView {
   state: PlayerLifecycleState;
@@ -164,6 +162,7 @@ export function PlayerShell() {
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [resolution, setResolution] =
     useState<LogicalResolution>(DEFAULT_RESOLUTION);
+  const [rotation, setRotation] = useState<GameRotation>("none");
   const [audio, setAudio] = useState<AudioView>(() => initialAudioView(false));
   const [openTool, setOpenTool] = useState<OpenTool>("upload");
 
@@ -287,8 +286,10 @@ export function PlayerShell() {
     };
     const selectedResolution = existing
       ? supportedResolution(existing.settings.resolution)
-      : DEFAULT_RESOLUTION;
+      : result.metadata.detectedDisplayProfile?.resolution ?? DEFAULT_RESOLUTION;
+    const selectedRotation = existing?.settings.rotation ?? "none";
     setResolution(selectedResolution);
+    setRotation(selectedRotation);
     setSelectedGame(game);
     setAudio(initialAudioView(game.muted));
 
@@ -303,6 +304,7 @@ export function PlayerShell() {
         settings: {
           muted: game.muted,
           resolution: selectedResolution,
+          rotation: selectedRotation,
         },
       });
       if (validationAttempt.current !== attempt) return;
@@ -324,6 +326,7 @@ export function PlayerShell() {
     game: SelectedGame,
     midlet: JarReview["midlets"][number],
     launchResolution: LogicalResolution = resolution,
+    launchRotation: GameRotation = rotation,
   ): Promise<void> {
     setValidationError(null);
     let cached: CachedGame<JarReview>;
@@ -340,6 +343,7 @@ export function PlayerShell() {
         settings: {
           muted: game.muted,
           resolution: launchResolution,
+          rotation: launchRotation,
         },
       });
     } catch {
@@ -356,6 +360,7 @@ export function PlayerShell() {
       className: midlet.className,
       jarBytes: game.bytes,
       resolution: launchResolution,
+      rotation: launchRotation,
       muted: game.muted,
     };
     await adapter.current?.launchMidlet(launch);
@@ -368,6 +373,7 @@ export function PlayerShell() {
     setLastGameBusy(true);
     resumeInProgress.current = true;
     const restoredResolution = supportedResolution(lastGame.settings.resolution);
+    const restoredRotation = lastGame.settings.rotation ?? "none";
     const restored: SelectedGame = {
       identity: lastGame.identity,
       sourceFileName: lastGame.sourceFileName,
@@ -393,6 +399,7 @@ export function PlayerShell() {
     }
 
     setResolution(restoredResolution);
+    setRotation(restoredRotation);
     setSelectedGame(restored);
     setAudio(initialAudioView(restored.muted));
     if (!midlet) {
@@ -407,7 +414,12 @@ export function PlayerShell() {
     }
 
     try {
-      await launchMidlet(restored, midlet, restoredResolution);
+      await launchMidlet(
+        restored,
+        midlet,
+        restoredResolution,
+        restoredRotation,
+      );
     } finally {
       resumeInProgress.current = false;
       setLastGameBusy(false);
@@ -550,6 +562,7 @@ export function PlayerShell() {
         ?.updateGameSettings<JarReview>(selectedGame.identity, {
           muted: selectedGame.muted,
           resolution: selected,
+          rotation,
         })
         .then((updated) => setLastGame(updated))
         .catch(() =>
@@ -561,7 +574,45 @@ export function PlayerShell() {
 
     if (activeGame) {
       releasePressedKeys();
-      void adapter.current?.restart(selected);
+      void adapter.current?.restart({ resolution: selected, rotation });
+    }
+  }
+
+  function changeRotation(rotateOutput: boolean): void {
+    if (!selectedGame) return;
+    const next: GameRotation = rotateOutput ? "counterclockwise" : "none";
+    if (next === rotation) return;
+
+    const activeGame = player.state === "running";
+    if (
+      activeGame
+      && !window.confirm(
+        "Changing output rotation restarts the emulator. Unsaved progress since "
+          + "the game's last save may be lost. Continue?",
+      )
+    ) {
+      return;
+    }
+
+    setRotation(next);
+    if (lastGame?.identity === selectedGame.identity) {
+      void storage.current
+        ?.updateGameSettings<JarReview>(selectedGame.identity, {
+          muted: selectedGame.muted,
+          resolution,
+          rotation: next,
+        })
+        .then((updated) => setLastGame(updated))
+        .catch(() =>
+          setValidationError(
+            "The output rotation could not be saved for this game.",
+          ),
+        );
+    }
+
+    if (activeGame) {
+      releasePressedKeys();
+      void adapter.current?.restart({ resolution, rotation: next });
     }
   }
 
@@ -595,6 +646,7 @@ export function PlayerShell() {
         ?.updateGameSettings<JarReview>(selectedGame.identity, {
           muted,
           resolution,
+          rotation,
         })
         .then((updated) => setLastGame(updated))
         .catch(() =>
@@ -858,8 +910,11 @@ export function PlayerShell() {
           {openTool === "resolution" && selectedGame && (
             <ResolutionControl
               resolution={resolution}
+              rotation={rotation}
+              detectedProfile={selectedGame.review.detectedDisplayProfile}
               disabled={["loading-runtime", "launching", "restarting"].includes(player.state)}
               onChange={changeResolution}
+              onRotationChange={changeRotation}
             />
           )}
 
@@ -994,12 +1049,18 @@ function toolTitle(tool: Exclude<OpenTool, null>): string {
 
 function ResolutionControl({
   resolution,
+  rotation,
+  detectedProfile,
   disabled,
   onChange,
+  onRotationChange,
 }: {
   resolution: LogicalResolution;
+  rotation: GameRotation;
+  detectedProfile?: JarReview["detectedDisplayProfile"];
   disabled: boolean;
   onChange: (value: string) => void;
+  onRotationChange: (rotateOutput: boolean) => void;
 }) {
   return (
     <div className="resolution-control">
@@ -1016,6 +1077,25 @@ function ResolutionControl({
           </option>
         ))}
       </select>
+      {detectedProfile && (
+        <p className={detectedProfile.confidence === "low" ? "detection-warning" : undefined}>
+          {detectedProfile.confidence === "low" ? "Best guess" : "Detected"}
+          {" "}{detectedProfile.resolution.width}×{detectedProfile.resolution.height}
+          {" from "}{detectedProfile.source}.
+          {detectedProfile.confidence === "low"
+            ? " Check the size and adjust it if the game does not fit."
+            : ""}
+        </p>
+      )}
+      <label className="rotation-control">
+        <input
+          type="checkbox"
+          checked={rotation === "counterclockwise"}
+          disabled={disabled}
+          onChange={(event) => onRotationChange(event.currentTarget.checked)}
+        />
+        <span>Rotate game output</span>
+      </label>
       <p>Logical pixels. Display scaling keeps the original proportions.</p>
     </div>
   );

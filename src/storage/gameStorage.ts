@@ -1,10 +1,12 @@
-import type { LogicalResolution } from "../runtime/runtimeAdapter";
+import type { GameRotation, LogicalResolution } from "../runtime/runtimeAdapter";
 
 export type GameResolution = LogicalResolution;
 
 export interface GameSettings {
   muted: boolean;
   resolution: GameResolution;
+  /** Absent only on records cached before per-game rotation was introduced. */
+  rotation?: GameRotation;
 }
 
 export interface MidletSelection {

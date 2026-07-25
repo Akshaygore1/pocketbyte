@@ -1,3 +1,5 @@
+import type { DetectedDisplayProfile } from "./displayProfile";
+
 export interface MidletManifestEntry {
   index: number;
   declaration: string;
@@ -14,6 +16,7 @@ export interface JarManifestMetadata {
   profile?: string;
   configuration?: string;
   mainClass?: string;
+  detectedDisplayProfile?: DetectedDisplayProfile;
   midlets: MidletManifestEntry[];
 }
 

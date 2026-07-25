@@ -4,6 +4,7 @@ import {
   type JarValidationLimits,
   validateJarBytes,
 } from "../jar/validateJar";
+import type { DetectedDisplayProfile } from "../jar/displayProfile";
 
 export const MAX_JAR_BYTES = DEFAULT_JAR_VALIDATION_LIMITS.maxCompressedBytes;
 export const MAX_JAR_ENTRIES = DEFAULT_JAR_VALIDATION_LIMITS.maxEntries;
@@ -23,6 +24,7 @@ export interface JarReview {
   icon?: string;
   profile?: string;
   configuration?: string;
+  detectedDisplayProfile?: DetectedDisplayProfile;
   midlets: ReviewedMidlet[];
 }
 
@@ -76,7 +78,11 @@ export async function validateJar(
   }
 
   try {
-    const validated = await validateJarBytes(localBytes, limits);
+    const validated = await validateJarBytes(
+      localBytes,
+      limits,
+      isFile(source) ? source.name : undefined,
+    );
     return {
       ok: true,
       sha256: validated.identity,
@@ -87,6 +93,7 @@ export async function validateJar(
         icon: validated.metadata.iconPath,
         profile: validated.metadata.profile,
         configuration: validated.metadata.configuration,
+        detectedDisplayProfile: validated.metadata.detectedDisplayProfile,
         midlets: validated.metadata.midlets.map((midlet) => ({
           index: midlet.index,
           name: midlet.name,

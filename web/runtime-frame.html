@@ -120,6 +120,7 @@
           name: midlet.name,
           width: String(midlet.resolution.width),
           height: String(midlet.resolution.height),
+          rotation: midlet.rotation,
           muted: midlet.muted ? "1" : "0",
           fractionScale: "1",
           shellControls: "1",
@@ -212,6 +213,8 @@
           && typeof command.midlet.className === "string"
           && Number.isInteger(command.midlet.resolution?.width)
           && Number.isInteger(command.midlet.resolution?.height)
+          && (command.midlet.rotation === "none"
+            || command.midlet.rotation === "counterclockwise")
         ) {
           post("runtime-loading", { fixtureName: command.midlet.name });
           launchMidlet(command.midlet);

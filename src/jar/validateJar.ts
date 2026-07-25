@@ -2,6 +2,11 @@ import { inflateSync } from "fflate";
 
 import { copyBytes, sha256JarIdentity } from "./identity";
 import {
+  detectDisplayProfile,
+  readPngDisplayHint,
+  type PngDisplayHint,
+} from "./displayProfile";
+import {
   type JarManifestMetadata,
   ManifestParseError,
   parseJarManifest,
@@ -88,6 +93,7 @@ const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
 export async function validateJarBytes(
   source: ArrayBuffer | ArrayBufferView,
   limits: JarValidationLimits = DEFAULT_JAR_VALIDATION_LIMITS,
+  sourceFileName?: string,
 ): Promise<ValidatedJar> {
   const bytes = copyBytes(source);
   if (bytes.byteLength > limits.maxCompressedBytes) {
@@ -121,9 +127,14 @@ export async function validateJarBytes(
   }
 
   let manifestBytes: Uint8Array | undefined;
+  const pngHints: PngDisplayHint[] = [];
   for (const entry of entries) {
     const content = readZipEntry(bytes, entry);
     if (entry === manifests[0]) manifestBytes = content;
+    if (entry.name.toLowerCase().endsWith(".png")) {
+      const hint = readPngDisplayHint(entry.name, content);
+      if (hint) pngHints.push(hint);
+    }
   }
 
   let manifestText: string;
@@ -141,6 +152,11 @@ export async function validateJarBytes(
   let metadata: JarManifestMetadata;
   try {
     metadata = parseJarManifest(manifestText);
+    metadata.detectedDisplayProfile = detectDisplayProfile(
+      manifestText,
+      sourceFileName,
+      pngHints,
+    );
   } catch (error) {
     const detail =
       error instanceof ManifestParseError ? error.message : "unknown error";

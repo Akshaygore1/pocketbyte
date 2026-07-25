@@ -477,6 +477,35 @@ select:focus-visible,
   background: #f0e8cf;
 }
 
+.rotation-control {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid #8d876f;
+  background: #e8dfc5;
+  cursor: pointer;
+}
+
+.rotation-control input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: #44406a;
+}
+
+.rotation-control:has(input:disabled) {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.resolution-control .detection-warning {
+  padding: 0.55rem;
+  color: #6c5148;
+  border: 1px solid #a25044;
+  background: #efd0bd;
+}
+
 .resolution-control p {
   margin: 0;
   color: #625f54;

@@ -447,11 +447,12 @@ async function init() {
             const requestedWidth = sp.get("width");
             const requestedHeight = sp.get("height");
             if (requestedWidth && requestedHeight) {
-                const rotateDisplay =
-                    Number(requestedHeight) > Number(requestedWidth);
                 await settings.put("width", requestedWidth);
                 await settings.put("height", requestedHeight);
-                await settings.put("rotate", rotateDisplay ? "on" : "off");
+                await settings.put(
+                    "rotate",
+                    sp.get("rotation") === "counterclockwise" ? "on" : "off",
+                );
             }
             await LauncherUtil.initApp(jarFile, loader, settings, null, null);
             args = ['app', appId];
