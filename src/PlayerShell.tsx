@@ -11,7 +11,6 @@ import {
 } from "./runtime/runtimeAdapter";
 import { observeGamepadInput } from "./runtime/gamepadInput";
 import { readValidatedJarResource } from "./jar/validateJar";
-import { GAME_CATALOG, type CatalogGame } from "./games/catalog";
 import {
   DEFAULT_DISPLAY_RESOLUTION,
   SUPPORTED_DISPLAY_RESOLUTIONS,
@@ -37,7 +36,6 @@ interface PlayerView {
 }
 
 interface SelectedGame {
-  catalogId?: string;
   identity: string;
   sourceFileName: string;
   bytes: Uint8Array;
@@ -58,7 +56,6 @@ interface ActiveInput {
 }
 
 type OpenTool =
-  | "library"
   | "upload"
   | "saved"
   | "controls"
@@ -180,8 +177,6 @@ export function PlayerShell() {
   const pressedInputs = useRef(new Map<string, ActiveInput>());
   const validationAttempt = useRef(0);
   const resumeInProgress = useRef(false);
-  const activeCatalogLaunch = useRef<string | null>(null);
-  const catalogBusy = useRef<string | null>(null);
   const runtimeSuggestionHandler = useRef(
     (_event: RuntimeLifecycleEvent) => {},
   );
@@ -208,9 +203,7 @@ export function PlayerShell() {
   const [resolutionSource, setResolutionSource] =
     useState<ResolutionSource>("detected");
   const [audio, setAudio] = useState<AudioView>(() => initialAudioView(false));
-  const [openTool, setOpenTool] = useState<OpenTool>("library");
-  const [catalogBusyId, setCatalogBusyId] = useState<string | null>(null);
-  const [catalogErrors, setCatalogErrors] = useState<Record<string, string>>({});
+  const [openTool, setOpenTool] = useState<OpenTool>("upload");
   const activeGameIdentity = useRef<string | null>(null);
   activeGameIdentity.current = selectedGame?.identity ?? null;
 
@@ -266,23 +259,6 @@ export function PlayerShell() {
     adapter.current = runtime;
     const unsubscribe = runtime.subscribe((event) => {
       if (event.type === "runtime-ready") setRuntimeAvailable(true);
-      const catalogId = activeCatalogLaunch.current;
-      if (catalogId && event.type === "running") {
-        activeCatalogLaunch.current = null;
-        catalogBusy.current = null;
-        setCatalogBusyId(null);
-        setCatalogErrors((current) => omitKey(current, catalogId));
-        toolDialog.current?.close();
-      } else if (catalogId && event.type === "failed") {
-        activeCatalogLaunch.current = null;
-        catalogBusy.current = null;
-        setCatalogBusyId(null);
-        setCatalogErrors((current) => ({
-          ...current,
-          [catalogId]: `${failureStageLabel(event.stage)}: ${event.message}`,
-        }));
-        setOpenTool("library");
-      }
       runtimeSuggestionHandler.current(event);
       setAudio((current) => reduceAudioEvent(current, event));
       setPlayer((current) => reduceRuntimeEvent(current, event));
@@ -398,7 +374,6 @@ export function PlayerShell() {
     sourceFileName,
     bytes,
     review,
-    catalogId,
     selectedMidlet,
     defaults,
     attempt,
@@ -408,7 +383,6 @@ export function PlayerShell() {
     sourceFileName: string;
     bytes: Uint8Array;
     review: JarReview;
-    catalogId?: string;
     selectedMidlet?: JarReview["midlets"][number];
     defaults: {
       muted: boolean;
@@ -428,7 +402,6 @@ export function PlayerShell() {
     if (validationAttempt.current !== attempt) return null;
 
     const game: SelectedGame = {
-      ...(catalogId ? { catalogId } : {}),
       identity,
       sourceFileName,
       bytes,
@@ -491,174 +464,6 @@ export function PlayerShell() {
       rotation: selectedRotation,
       resolutionSource: selectedResolutionSource,
     };
-  }
-
-  async function launchCatalogGame(catalogGame: CatalogGame): Promise<void> {
-    if (
-      catalogBusy.current
-      || (
-        selectedGame?.catalogId === catalogGame.id
-        && player.state === "running"
-      )
-    ) {
-      return;
-    }
-    if (
-      player.state === "running"
-      && !window.confirm(
-        `Switch to ${catalogGame.title}? Unsaved progress since the current game's last save may be lost.`,
-      )
-    ) {
-      return;
-    }
-
-    const playerBeforeSwitch = player;
-    const selectedGameBeforeSwitch = selectedGame;
-    const resolutionBeforeSwitch = resolution;
-    const rotationBeforeSwitch = rotation;
-    const resolutionSourceBeforeSwitch = resolutionSource;
-    const audioBeforeSwitch = audio;
-    const lastGameBeforeSwitch = lastGame;
-    let selectionWasReplaced = false;
-    let preparedCatalogGame: SelectedGame | null = null;
-    const attempt = validationAttempt.current + 1;
-    validationAttempt.current = attempt;
-    catalogBusy.current = catalogGame.id;
-    setCatalogBusyId(catalogGame.id);
-    setCatalogErrors((current) => omitKey(current, catalogGame.id));
-    setValidationError(null);
-    setStorageNotice(null);
-    if (playerBeforeSwitch.state !== "running") {
-      setPlayer((current) => ({
-        ...current,
-        state: "validating",
-        frameLabel: `Downloading ${catalogGame.title}…`,
-        runtimeError: null,
-      }));
-    }
-
-    try {
-      const response = await fetch(catalogGame.jarUrl);
-      if (!response.ok) {
-        throw new Error(
-          response.status === 404
-            ? "The bundled JAR is unavailable (404)."
-            : `The bundled JAR could not be downloaded (HTTP ${response.status}).`,
-        );
-      }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (validationAttempt.current !== attempt) return;
-
-      const result = await validateJar(bytes);
-      if (validationAttempt.current !== attempt) return;
-      if (!result.ok) throw new Error(`Invalid archive: ${result.error.message}`);
-
-      const midlet = result.metadata.midlets.find(
-        (candidate) => candidate.className === catalogGame.midletClass,
-      );
-      if (!midlet) {
-        throw new Error(
-          `Configured MIDlet ${catalogGame.midletClass} is not declared by this JAR.`,
-        );
-      }
-      const classPath = `${catalogGame.midletClass.replaceAll(".", "/")}.class`;
-      if (!readValidatedJarResource(bytes, classPath)) {
-        throw new Error(
-          `Configured MIDlet ${catalogGame.midletClass} is missing from this JAR.`,
-        );
-      }
-
-      resumeInProgress.current = true;
-      const prepared = await prepareGameSelection({
-        identity: result.sha256,
-        sourceFileName:
-          catalogGame.jarUrl.split("/").pop() ?? `${catalogGame.id}.jar`,
-        bytes,
-        review: result.metadata,
-        catalogId: catalogGame.id,
-        selectedMidlet: midlet,
-        defaults: {
-          muted: catalogGame.muted,
-          resolution: catalogGame.resolution,
-          resolutionSource: "manual",
-          rotation: catalogGame.rotation,
-        },
-        attempt,
-        requireCache: true,
-      });
-      if (!prepared || validationAttempt.current !== attempt) return;
-      selectionWasReplaced = true;
-      preparedCatalogGame = prepared.game;
-
-      setPlayer((current) => ({ ...current, state: "ready" }));
-      activeCatalogLaunch.current = catalogGame.id;
-      const launchError = await launchMidlet(
-        prepared.game,
-        midlet,
-        prepared.resolution,
-        prepared.rotation,
-        prepared.resolutionSource,
-        false,
-        false,
-      );
-      if (launchError) {
-        activeCatalogLaunch.current = null;
-        throw new Error(launchError);
-      }
-    } catch (error) {
-      if (validationAttempt.current !== attempt) return;
-      activeCatalogLaunch.current = null;
-      catalogBusy.current = null;
-      setCatalogBusyId(null);
-      setCatalogErrors((current) => ({
-        ...current,
-        [catalogGame.id]: error instanceof Error
-          ? error.message
-          : "The game could not be launched.",
-      }));
-      if (selectionWasReplaced) {
-        releaseIconUrls(preparedCatalogGame?.iconUrls);
-        setSelectedGame(
-          selectedGameBeforeSwitch
-            ? {
-                ...selectedGameBeforeSwitch,
-                iconUrls: createMidletIconUrls(
-                  selectedGameBeforeSwitch.bytes,
-                  selectedGameBeforeSwitch.review,
-                ),
-              }
-            : null,
-        );
-        setResolution(resolutionBeforeSwitch);
-        setRotation(rotationBeforeSwitch);
-        resolutionRef.current = resolutionBeforeSwitch;
-        rotationRef.current = rotationBeforeSwitch;
-        resolutionSourceRef.current = resolutionSourceBeforeSwitch;
-        mutedRef.current = selectedGameBeforeSwitch?.muted ?? false;
-        setResolutionSource(resolutionSourceBeforeSwitch);
-        setAudio(audioBeforeSwitch);
-        setLastGame(lastGameBeforeSwitch);
-        try {
-          await storage.current!.setLastGame(
-            lastGameBeforeSwitch?.identity ?? null,
-          );
-        } catch {
-          setValidationError(
-            "The previous saved-game selection could not be restored in browser storage.",
-          );
-        }
-      }
-      setPlayer(playerBeforeSwitch);
-    } finally {
-      resumeInProgress.current = false;
-      if (
-        validationAttempt.current !== attempt
-        && catalogBusy.current === catalogGame.id
-      ) {
-        catalogBusy.current = null;
-        setCatalogBusyId(null);
-      }
-    }
   }
 
   async function launchMidlet(
@@ -1327,16 +1132,9 @@ export function PlayerShell() {
         </div>
         <div className="tool-buttons">
           <ToolButton
-            icon="library"
-            label="Game library"
-            active={openTool === "library"}
-            onClick={() => toggleTool("library")}
-          />
-          <ToolButton
             icon="cartridge"
             label="Load game"
             active={openTool === "upload"}
-            disabled={Boolean(catalogBusyId)}
             onClick={() => toggleTool("upload")}
           />
           <ToolButton
@@ -1344,7 +1142,6 @@ export function PlayerShell() {
             label="Saved game"
             active={openTool === "saved"}
             indicator={Boolean(lastGame)}
-            disabled={Boolean(catalogBusyId)}
             onClick={() => toggleTool("saved")}
           />
           <ToolButton
@@ -1370,21 +1167,20 @@ export function PlayerShell() {
             icon="controls"
             label="Controls"
             active={openTool === "controls"}
-            disabled={Boolean(catalogBusyId)}
             onClick={() => toggleTool("controls")}
           />
           <ToolButton
             icon="resolution"
             label="Display size"
             active={openTool === "resolution"}
-            disabled={!selectedGame || Boolean(catalogBusyId)}
+            disabled={!selectedGame}
             onClick={() => toggleTool("resolution")}
           />
           <ToolButton
             icon="info"
             label="Game details"
             active={openTool === "details"}
-            disabled={!selectedGame || Boolean(catalogBusyId)}
+            disabled={!selectedGame}
             onClick={() => toggleTool("details")}
           />
         </div>
@@ -1394,7 +1190,7 @@ export function PlayerShell() {
         <dialog
           id="tool-dialog"
           ref={toolDialog}
-          className={`tool-panel${openTool === "library" ? " library-panel" : ""}`}
+          className="tool-panel"
           aria-labelledby="tool-panel-title"
           onClick={(event) => {
             if (event.target === event.currentTarget) closeToolDialog();
@@ -1416,62 +1212,6 @@ export function PlayerShell() {
               <Icon name="close" />
             </button>
           </div>
-
-          {openTool === "library" && (
-            <div className="library-content">
-              <p className="library-intro">
-                Pick a cartridge to download it to this browser and play.
-              </p>
-              <div className="game-grid" aria-label="Bundled games">
-                {GAME_CATALOG.map((catalogGame) => {
-                  const busy = catalogBusyId === catalogGame.id;
-                  const blockedByOtherLaunch = Boolean(catalogBusyId && !busy);
-                  const isRunning =
-                    selectedGame?.catalogId === catalogGame.id
-                    && player.state === "running";
-                  return (
-                    <article className="game-card" key={catalogGame.id}>
-                      <button
-                        type="button"
-                        disabled={
-                          busy
-                          || blockedByOtherLaunch
-                          || isRunning
-                          || !runtimeAvailable
-                        }
-                        aria-describedby={`catalog-description-${catalogGame.id}`}
-                        onClick={() => void launchCatalogGame(catalogGame)}
-                      >
-                        <span className="game-art" aria-hidden="true">
-                          {catalogGame.artworkUrl
-                            ? <img src={catalogGame.artworkUrl} alt="" />
-                            : <CartridgePlaceholder />}
-                        </span>
-                        <span className="game-card-copy">
-                          <strong>{catalogGame.title}</strong>
-                          <span id={`catalog-description-${catalogGame.id}`}>
-                            {catalogGame.description ?? "A bundled Java ME game."}
-                          </span>
-                          <small>
-                            {busy
-                              ? "Downloading & checking…"
-                              : isRunning
-                                ? "Now playing"
-                                : "Play game"}
-                          </small>
-                        </span>
-                      </button>
-                      {catalogErrors[catalogGame.id] && (
-                        <p className="catalog-error" role="alert">
-                          {catalogErrors[catalogGame.id]}
-                        </p>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           {openTool === "upload" && (
             <div className="panel-content">
@@ -1600,7 +1340,6 @@ type IconName =
   | "close"
   | "controls"
   | "info"
-  | "library"
   | "muted"
   | "resolution"
   | "save";
@@ -1664,10 +1403,6 @@ function Icon({ name }: { name: IconName }) {
         <path {...common} d="M4 4h13l3 3v13H4z" />
         <path {...common} d="M8 4v6h8V4M8 20v-6h8v6" />
       </>}
-      {name === "library" && <>
-        <path {...common} d="M4 5.5h6v13H4zM14 5.5h6v13h-6z" />
-        <path {...common} d="M6.5 8.5h1M16.5 8.5h1M6.5 15.5h1M16.5 15.5h1" />
-      </>}
       {name === "resolution" && <>
         <rect {...common} x="3.5" y="5" width="17" height="14" />
         <path {...common} d="M7 9V7h2M15 7h2v2M17 15v2h-2M9 17H7v-2" />
@@ -1703,14 +1438,12 @@ const TOOL_LABELS: Record<IconName, string> = {
   close: "CLOSE",
   controls: "CTRL",
   info: "INFO",
-  library: "GAMES",
   muted: "AUDIO",
   resolution: "SIZE",
   save: "SAVE",
 };
 
 function toolTitle(tool: Exclude<OpenTool, null>): string {
-  if (tool === "library") return "Game library";
   if (tool === "upload") return "Load game";
   if (tool === "saved") return "Saved game";
   if (tool === "controls") return "Controls";
@@ -1719,18 +1452,7 @@ function toolTitle(tool: Exclude<OpenTool, null>): string {
 }
 
 function toolKicker(tool: Exclude<OpenTool, null>): string {
-  if (tool === "library") return "Ready to play";
   return tool === "controls" ? "Player guide" : "Cartridge bay";
-}
-
-function CartridgePlaceholder() {
-  return (
-    <svg viewBox="0 0 96 72" aria-hidden="true">
-      <path d="M20 7h49l7 7v51H20z" />
-      <path d="M29 7v18h38V7M29 47h38M34 65V51M45 65V51M56 65V51M67 65V51" />
-      <path className="placeholder-label" d="M35 31h26v9H35z" />
-    </svg>
-  );
 }
 
 function ControlsGuide() {
@@ -1999,12 +1721,4 @@ function failureStageLabel(stage: string): string {
     default:
       return "Launch failed";
   }
-}
-
-function omitKey(
-  source: Record<string, string>,
-  key: string,
-): Record<string, string> {
-  const { [key]: _removed, ...rest } = source;
-  return rest;
 }
