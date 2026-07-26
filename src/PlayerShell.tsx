@@ -1,14 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import {
   CheerpJFrameRuntimeAdapter,
+  translatePhysicalKey,
   type GameRotation,
   type LogicalResolution,
   type MidletLaunch,
   type PlayerLifecycleState,
   type RuntimeLifecycleEvent,
 } from "./runtime/runtimeAdapter";
+import { observeGamepadInput } from "./runtime/gamepadInput";
 import { readValidatedJarResource } from "./jar/validateJar";
+import { GAME_CATALOG, type CatalogGame } from "./games/catalog";
 import {
   DEFAULT_DISPLAY_RESOLUTION,
   SUPPORTED_DISPLAY_RESOLUTIONS,
@@ -17,6 +20,8 @@ import {
   createGameStorage,
   type CachedGame,
   type GameStorage,
+  type MidletSelection,
+  type ResolutionSource,
 } from "./storage/gameStorage";
 import { validateJar, type JarReview } from "./validation/validateJar";
 import "./PlayerShell.css";
@@ -32,6 +37,7 @@ interface PlayerView {
 }
 
 interface SelectedGame {
+  catalogId?: string;
   identity: string;
   sourceFileName: string;
   bytes: Uint8Array;
@@ -46,7 +52,26 @@ interface AudioView {
   notice: string | null;
 }
 
-type OpenTool = "upload" | "saved" | "resolution" | "details" | null;
+interface ActiveInput {
+  kind: "keyboard" | "gamepad";
+  code: string;
+}
+
+type OpenTool =
+  | "library"
+  | "upload"
+  | "saved"
+  | "controls"
+  | "resolution"
+  | "details"
+  | null;
+
+interface PreparedGame {
+  game: SelectedGame;
+  resolution: LogicalResolution;
+  rotation: GameRotation;
+  resolutionSource: ResolutionSource;
+}
 
 function initialAudioView(muted: boolean): AudioView {
   return {
@@ -54,6 +79,10 @@ function initialAudioView(muted: boolean): AudioView {
     muted,
     notice: null,
   };
+}
+
+function isManualResolutionSource(source: ResolutionSource): boolean {
+  return source === "manual";
 }
 
 function reduceAudioEvent(
@@ -134,6 +163,7 @@ function reduceRuntimeEvent(
     case "audio-initializing":
     case "audio-ready":
     case "media-warning":
+    case "runtime-resolution-suggested":
     case "diagnostics":
     case "teardown":
       return current;
@@ -143,11 +173,23 @@ function reduceRuntimeEvent(
 export function PlayerShell() {
   const frameContainer = useRef<HTMLDivElement>(null);
   const phone = useRef<HTMLDivElement>(null);
+  const toolDialog = useRef<HTMLDialogElement>(null);
+  const toolTrigger = useRef<HTMLElement | null>(null);
   const adapter = useRef<CheerpJFrameRuntimeAdapter | null>(null);
   const storage = useRef<GameStorage | null>(null);
-  const pressedKeys = useRef(new Set<string>());
+  const pressedInputs = useRef(new Map<string, ActiveInput>());
   const validationAttempt = useRef(0);
   const resumeInProgress = useRef(false);
+  const activeCatalogLaunch = useRef<string | null>(null);
+  const catalogBusy = useRef<string | null>(null);
+  const runtimeSuggestionHandler = useRef(
+    (_event: RuntimeLifecycleEvent) => {},
+  );
+  const autoAdjustmentInProgress = useRef(new Set<string>());
+  const resolutionSourceRef = useRef<ResolutionSource>("detected");
+  const resolutionRef = useRef<LogicalResolution>(DEFAULT_RESOLUTION);
+  const rotationRef = useRef<GameRotation>("none");
+  const mutedRef = useRef(false);
   const [player, setPlayer] = useState<PlayerView>({
     state: "loading-runtime",
     frameLabel: "Loading runtime frame…",
@@ -163,8 +205,20 @@ export function PlayerShell() {
   const [resolution, setResolution] =
     useState<LogicalResolution>(DEFAULT_RESOLUTION);
   const [rotation, setRotation] = useState<GameRotation>("none");
+  const [resolutionSource, setResolutionSource] =
+    useState<ResolutionSource>("detected");
   const [audio, setAudio] = useState<AudioView>(() => initialAudioView(false));
-  const [openTool, setOpenTool] = useState<OpenTool>("upload");
+  const [openTool, setOpenTool] = useState<OpenTool>("library");
+  const [catalogBusyId, setCatalogBusyId] = useState<string | null>(null);
+  const [catalogErrors, setCatalogErrors] = useState<Record<string, string>>({});
+  const activeGameIdentity = useRef<string | null>(null);
+  activeGameIdentity.current = selectedGame?.identity ?? null;
+
+  runtimeSuggestionHandler.current = (event) => {
+    if (event.type === "runtime-resolution-suggested") {
+      void applyRuntimeResolutionSuggestion(event);
+    }
+  };
 
   useEffect(() => {
     const gameStorage = createGameStorage();
@@ -195,10 +249,41 @@ export function PlayerShell() {
   }, []);
 
   useEffect(() => {
+    const dialog = toolDialog.current;
+    if (!openTool || !dialog) return;
+
+    if (!dialog.open) dialog.showModal();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [openTool]);
+
+  useEffect(() => {
     const runtime = new CheerpJFrameRuntimeAdapter();
     adapter.current = runtime;
     const unsubscribe = runtime.subscribe((event) => {
       if (event.type === "runtime-ready") setRuntimeAvailable(true);
+      const catalogId = activeCatalogLaunch.current;
+      if (catalogId && event.type === "running") {
+        activeCatalogLaunch.current = null;
+        catalogBusy.current = null;
+        setCatalogBusyId(null);
+        setCatalogErrors((current) => omitKey(current, catalogId));
+        toolDialog.current?.close();
+      } else if (catalogId && event.type === "failed") {
+        activeCatalogLaunch.current = null;
+        catalogBusy.current = null;
+        setCatalogBusyId(null);
+        setCatalogErrors((current) => ({
+          ...current,
+          [catalogId]: `${failureStageLabel(event.stage)}: ${event.message}`,
+        }));
+        setOpenTool("library");
+      }
+      runtimeSuggestionHandler.current(event);
       setAudio((current) => reduceAudioEvent(current, event));
       setPlayer((current) => reduceRuntimeEvent(current, event));
     });
@@ -231,8 +316,25 @@ export function PlayerShell() {
     if (player.state === "running") phone.current?.focus();
   }, [player.state]);
 
+  useEffect(() => {
+    if (player.state !== "running") return;
+
+    return observeGamepadInput(({ source, code, pressed }) => {
+      sendKey(code, pressed, source, "gamepad");
+    });
+  }, [player.state]);
+
   async function inspectSelectedJar(file: File | undefined): Promise<void> {
     if (!file) return;
+
+    if (
+      player.state === "running"
+      && !window.confirm(
+        "Switch games? Unsaved progress since the game's last save may be lost.",
+      )
+    ) {
+      return;
+    }
 
     const attempt = validationAttempt.current + 1;
     validationAttempt.current = attempt;
@@ -268,58 +370,295 @@ export function PlayerShell() {
     }
     if (validationAttempt.current !== attempt) return;
 
-    let existing: CachedGame<JarReview> | null = null;
-    try {
-      existing = await storage.current?.getGame<JarReview>(result.sha256) ?? null;
-    } catch {
-      // A storage read failure is surfaced when caching is attempted at launch.
-    }
-    if (validationAttempt.current !== attempt) return;
-
-    const game = {
+    await prepareGameSelection({
       identity: result.sha256,
       sourceFileName: file.name,
       bytes,
       review: result.metadata,
-      iconUrls: createMidletIconUrls(bytes, result.metadata),
-      muted: existing?.settings.muted ?? false,
+      defaults: {
+        muted: false,
+        resolution:
+          result.metadata.detectedDisplayProfile?.resolution
+          ?? DEFAULT_RESOLUTION,
+        resolutionSource: "detected",
+        rotation: "none",
+      },
+      attempt,
+    });
+    if (validationAttempt.current !== attempt) return;
+    setPlayer((current) => ({
+      ...current,
+      state: "ready",
+      runtimeError: null,
+    }));
+  }
+
+  async function prepareGameSelection({
+    identity,
+    sourceFileName,
+    bytes,
+    review,
+    catalogId,
+    selectedMidlet,
+    defaults,
+    attempt,
+    requireCache = false,
+  }: {
+    identity: string;
+    sourceFileName: string;
+    bytes: Uint8Array;
+    review: JarReview;
+    catalogId?: string;
+    selectedMidlet?: JarReview["midlets"][number];
+    defaults: {
+      muted: boolean;
+      resolution: LogicalResolution;
+      resolutionSource: ResolutionSource;
+      rotation: GameRotation;
+    };
+    attempt: number;
+    requireCache?: boolean;
+  }): Promise<PreparedGame | null> {
+    let existing: CachedGame<JarReview> | null = null;
+    try {
+      existing = await storage.current?.getGame<JarReview>(identity) ?? null;
+    } catch {
+      // Caching below provides the actionable storage error if this persists.
+    }
+    if (validationAttempt.current !== attempt) return null;
+
+    const game: SelectedGame = {
+      ...(catalogId ? { catalogId } : {}),
+      identity,
+      sourceFileName,
+      bytes,
+      review,
+      iconUrls: createMidletIconUrls(bytes, review),
+      muted: existing?.settings.muted ?? defaults.muted,
     };
     const selectedResolution = existing
       ? supportedResolution(existing.settings.resolution)
-      : result.metadata.detectedDisplayProfile?.resolution ?? DEFAULT_RESOLUTION;
-    const selectedRotation = existing?.settings.rotation ?? "none";
-    setResolution(selectedResolution);
-    setRotation(selectedRotation);
-    setSelectedGame(game);
-    setAudio(initialAudioView(game.muted));
+      : supportedResolution(defaults.resolution);
+    const selectedRotation = existing?.settings.rotation ?? defaults.rotation;
+    const selectedResolutionSource = existing?.settings.resolutionSource
+      ?? defaults.resolutionSource;
 
     try {
       const cached = await storage.current!.cacheGame({
         sourceFileName: game.sourceFileName,
         jarBytes: game.bytes,
         metadata: game.review,
-        ...(existing?.selectedMidlet
-          ? { selectedMidlet: existing.selectedMidlet }
-          : {}),
+        ...(selectedMidlet
+          ? { selectedMidlet: midletSelection(selectedMidlet) }
+          : existing?.selectedMidlet
+            ? { selectedMidlet: existing.selectedMidlet }
+            : {}),
         settings: {
           muted: game.muted,
           resolution: selectedResolution,
+          resolutionSource: selectedResolutionSource,
           rotation: selectedRotation,
         },
       });
-      if (validationAttempt.current !== attempt) return;
+      if (validationAttempt.current !== attempt) {
+        releaseIconUrls(game.iconUrls);
+        return null;
+      }
       setLastGame(cached);
     } catch {
-      setValidationError(
-        "This game could not be remembered locally. You can still review it and try again.",
-      );
+      const message =
+        "This game could not be remembered locally. Check browser storage and try again.";
+      setValidationError(message);
+      if (requireCache) {
+        releaseIconUrls(game.iconUrls);
+        throw new Error(message);
+      }
     }
-    setPlayer((current) => ({
-      ...current,
-      state: "ready",
-      runtimeError: null,
-    }));
 
+    setResolution(selectedResolution);
+    setRotation(selectedRotation);
+    resolutionRef.current = selectedResolution;
+    rotationRef.current = selectedRotation;
+    mutedRef.current = game.muted;
+    resolutionSourceRef.current = selectedResolutionSource;
+    setResolutionSource(selectedResolutionSource);
+    setSelectedGame(game);
+    setAudio(initialAudioView(game.muted));
+
+    return {
+      game,
+      resolution: selectedResolution,
+      rotation: selectedRotation,
+      resolutionSource: selectedResolutionSource,
+    };
+  }
+
+  async function launchCatalogGame(catalogGame: CatalogGame): Promise<void> {
+    if (
+      catalogBusy.current
+      || (
+        selectedGame?.catalogId === catalogGame.id
+        && player.state === "running"
+      )
+    ) {
+      return;
+    }
+    if (
+      player.state === "running"
+      && !window.confirm(
+        `Switch to ${catalogGame.title}? Unsaved progress since the current game's last save may be lost.`,
+      )
+    ) {
+      return;
+    }
+
+    const playerBeforeSwitch = player;
+    const selectedGameBeforeSwitch = selectedGame;
+    const resolutionBeforeSwitch = resolution;
+    const rotationBeforeSwitch = rotation;
+    const resolutionSourceBeforeSwitch = resolutionSource;
+    const audioBeforeSwitch = audio;
+    const lastGameBeforeSwitch = lastGame;
+    let selectionWasReplaced = false;
+    let preparedCatalogGame: SelectedGame | null = null;
+    const attempt = validationAttempt.current + 1;
+    validationAttempt.current = attempt;
+    catalogBusy.current = catalogGame.id;
+    setCatalogBusyId(catalogGame.id);
+    setCatalogErrors((current) => omitKey(current, catalogGame.id));
+    setValidationError(null);
+    setStorageNotice(null);
+    if (playerBeforeSwitch.state !== "running") {
+      setPlayer((current) => ({
+        ...current,
+        state: "validating",
+        frameLabel: `Downloading ${catalogGame.title}…`,
+        runtimeError: null,
+      }));
+    }
+
+    try {
+      const response = await fetch(catalogGame.jarUrl);
+      if (!response.ok) {
+        throw new Error(
+          response.status === 404
+            ? "The bundled JAR is unavailable (404)."
+            : `The bundled JAR could not be downloaded (HTTP ${response.status}).`,
+        );
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (validationAttempt.current !== attempt) return;
+
+      const result = await validateJar(bytes);
+      if (validationAttempt.current !== attempt) return;
+      if (!result.ok) throw new Error(`Invalid archive: ${result.error.message}`);
+
+      const midlet = result.metadata.midlets.find(
+        (candidate) => candidate.className === catalogGame.midletClass,
+      );
+      if (!midlet) {
+        throw new Error(
+          `Configured MIDlet ${catalogGame.midletClass} is not declared by this JAR.`,
+        );
+      }
+      const classPath = `${catalogGame.midletClass.replaceAll(".", "/")}.class`;
+      if (!readValidatedJarResource(bytes, classPath)) {
+        throw new Error(
+          `Configured MIDlet ${catalogGame.midletClass} is missing from this JAR.`,
+        );
+      }
+
+      resumeInProgress.current = true;
+      const prepared = await prepareGameSelection({
+        identity: result.sha256,
+        sourceFileName:
+          catalogGame.jarUrl.split("/").pop() ?? `${catalogGame.id}.jar`,
+        bytes,
+        review: result.metadata,
+        catalogId: catalogGame.id,
+        selectedMidlet: midlet,
+        defaults: {
+          muted: catalogGame.muted,
+          resolution: catalogGame.resolution,
+          resolutionSource: "manual",
+          rotation: catalogGame.rotation,
+        },
+        attempt,
+        requireCache: true,
+      });
+      if (!prepared || validationAttempt.current !== attempt) return;
+      selectionWasReplaced = true;
+      preparedCatalogGame = prepared.game;
+
+      setPlayer((current) => ({ ...current, state: "ready" }));
+      activeCatalogLaunch.current = catalogGame.id;
+      const launchError = await launchMidlet(
+        prepared.game,
+        midlet,
+        prepared.resolution,
+        prepared.rotation,
+        prepared.resolutionSource,
+        false,
+        false,
+      );
+      if (launchError) {
+        activeCatalogLaunch.current = null;
+        throw new Error(launchError);
+      }
+    } catch (error) {
+      if (validationAttempt.current !== attempt) return;
+      activeCatalogLaunch.current = null;
+      catalogBusy.current = null;
+      setCatalogBusyId(null);
+      setCatalogErrors((current) => ({
+        ...current,
+        [catalogGame.id]: error instanceof Error
+          ? error.message
+          : "The game could not be launched.",
+      }));
+      if (selectionWasReplaced) {
+        releaseIconUrls(preparedCatalogGame?.iconUrls);
+        setSelectedGame(
+          selectedGameBeforeSwitch
+            ? {
+                ...selectedGameBeforeSwitch,
+                iconUrls: createMidletIconUrls(
+                  selectedGameBeforeSwitch.bytes,
+                  selectedGameBeforeSwitch.review,
+                ),
+              }
+            : null,
+        );
+        setResolution(resolutionBeforeSwitch);
+        setRotation(rotationBeforeSwitch);
+        resolutionRef.current = resolutionBeforeSwitch;
+        rotationRef.current = rotationBeforeSwitch;
+        resolutionSourceRef.current = resolutionSourceBeforeSwitch;
+        mutedRef.current = selectedGameBeforeSwitch?.muted ?? false;
+        setResolutionSource(resolutionSourceBeforeSwitch);
+        setAudio(audioBeforeSwitch);
+        setLastGame(lastGameBeforeSwitch);
+        try {
+          await storage.current!.setLastGame(
+            lastGameBeforeSwitch?.identity ?? null,
+          );
+        } catch {
+          setValidationError(
+            "The previous saved-game selection could not be restored in browser storage.",
+          );
+        }
+      }
+      setPlayer(playerBeforeSwitch);
+    } finally {
+      resumeInProgress.current = false;
+      if (
+        validationAttempt.current !== attempt
+        && catalogBusy.current === catalogGame.id
+      ) {
+        catalogBusy.current = null;
+        setCatalogBusyId(null);
+      }
+    }
   }
 
   async function launchMidlet(
@@ -327,33 +666,34 @@ export function PlayerShell() {
     midlet: JarReview["midlets"][number],
     launchResolution: LogicalResolution = resolution,
     launchRotation: GameRotation = rotation,
-  ): Promise<void> {
+    launchResolutionSource: ResolutionSource = resolutionSource,
+    closeAfterDispatch = true,
+    cacheBeforeLaunch = true,
+  ): Promise<string | null> {
     setValidationError(null);
-    let cached: CachedGame<JarReview>;
-    try {
-      cached = await storage.current!.cacheGame({
-        sourceFileName: game.sourceFileName,
-        jarBytes: game.bytes,
-        metadata: game.review,
-        selectedMidlet: {
-          name: midlet.name,
-          className: midlet.className,
-          ...(midlet.icon ? { iconPath: midlet.icon } : {}),
-        },
-        settings: {
-          muted: game.muted,
-          resolution: launchResolution,
-          rotation: launchRotation,
-        },
-      });
-    } catch {
-      setValidationError(
-        "This game could not be saved locally. Check browser storage and try again.",
-      );
-      return;
+    if (cacheBeforeLaunch) {
+      let cached: CachedGame<JarReview>;
+      try {
+        cached = await storage.current!.cacheGame({
+          sourceFileName: game.sourceFileName,
+          jarBytes: game.bytes,
+          metadata: game.review,
+          selectedMidlet: midletSelection(midlet),
+          settings: {
+            muted: game.muted,
+            resolution: launchResolution,
+            resolutionSource: launchResolutionSource,
+            rotation: launchRotation,
+          },
+        });
+      } catch {
+        const message =
+          "This game could not be saved locally. Check browser storage and try again.";
+        setValidationError(message);
+        return message;
+      }
+      setLastGame(cached);
     }
-
-    setLastGame(cached);
     const launch: MidletLaunch = {
       identity: game.identity,
       name: midlet.name,
@@ -361,10 +701,20 @@ export function PlayerShell() {
       jarBytes: game.bytes,
       resolution: launchResolution,
       rotation: launchRotation,
+      automaticSizing:
+        launchResolutionSource !== "manual" && launchRotation === "none",
+      supportedResolutions: RESOLUTION_PRESETS,
       muted: game.muted,
     };
-    await adapter.current?.launchMidlet(launch);
-    setOpenTool(null);
+    try {
+      await adapter.current?.launchMidlet(launch);
+    } catch {
+      const message = "The runtime could not start this game. Try again.";
+      setValidationError(message);
+      return message;
+    }
+    if (closeAfterDispatch) closeToolDialog();
+    return null;
   }
 
   async function resumeLastGame(): Promise<void> {
@@ -374,6 +724,8 @@ export function PlayerShell() {
     resumeInProgress.current = true;
     const restoredResolution = supportedResolution(lastGame.settings.resolution);
     const restoredRotation = lastGame.settings.rotation ?? "none";
+    const restoredResolutionSource = lastGame.settings.resolutionSource
+      ?? "detected";
     const restored: SelectedGame = {
       identity: lastGame.identity,
       sourceFileName: lastGame.sourceFileName,
@@ -400,6 +752,11 @@ export function PlayerShell() {
 
     setResolution(restoredResolution);
     setRotation(restoredRotation);
+    resolutionRef.current = restoredResolution;
+    rotationRef.current = restoredRotation;
+    mutedRef.current = restored.muted;
+    resolutionSourceRef.current = restoredResolutionSource;
+    setResolutionSource(restoredResolutionSource);
     setSelectedGame(restored);
     setAudio(initialAudioView(restored.muted));
     if (!midlet) {
@@ -419,6 +776,7 @@ export function PlayerShell() {
         midlet,
         restoredResolution,
         restoredRotation,
+        restoredResolutionSource,
       );
     } finally {
       resumeInProgress.current = false;
@@ -538,6 +896,132 @@ export function PlayerShell() {
     }
   }
 
+  async function applyRuntimeResolutionSuggestion(
+    event: Extract<
+      RuntimeLifecycleEvent,
+      { type: "runtime-resolution-suggested" }
+    >,
+  ): Promise<void> {
+    if (
+      !selectedGame
+      || selectedGame.identity !== event.identity
+      || isManualResolutionSource(resolutionSourceRef.current)
+      || rotation !== "none"
+      || player.state !== "running"
+      || autoAdjustmentInProgress.current.has(event.identity)
+      || !isSmallerSameOrientation(event.resolution, resolution)
+    ) {
+      return;
+    }
+
+    autoAdjustmentInProgress.current.add(event.identity);
+    let updated: CachedGame<JarReview>;
+    try {
+      updated = await storage.current!.updateGameSettings<JarReview>(
+        event.identity,
+        {
+          muted: selectedGame.muted,
+          resolution: event.resolution,
+          resolutionSource: "runtime-content",
+          rotation,
+        },
+      );
+    } catch {
+      autoAdjustmentInProgress.current.delete(event.identity);
+      setValidationError(
+        "The automatically detected resolution could not be saved.",
+      );
+      return;
+    }
+
+    if (activeGameIdentity.current !== event.identity) return;
+    if (
+      isManualResolutionSource(resolutionSourceRef.current)
+      || rotationRef.current !== rotation
+      || mutedRef.current !== selectedGame.muted
+      || resolutionRef.current.width !== resolution.width
+      || resolutionRef.current.height !== resolution.height
+    ) {
+      try {
+        const restored = await storage.current!.updateGameSettings<JarReview>(
+          event.identity,
+          {
+            muted: mutedRef.current,
+            resolution: resolutionRef.current,
+            resolutionSource: resolutionSourceRef.current,
+            rotation: rotationRef.current,
+          },
+        );
+        if (activeGameIdentity.current === event.identity) setLastGame(restored);
+      } catch {
+        setValidationError("The latest display preference could not be saved.");
+      }
+      autoAdjustmentInProgress.current.delete(event.identity);
+      return;
+    }
+
+    const adjusted = { ...event.resolution };
+    setLastGame(updated);
+    setResolution(adjusted);
+    resolutionRef.current = adjusted;
+    resolutionSourceRef.current = "runtime-content";
+    setResolutionSource("runtime-content");
+    setStorageNotice(
+      `Auto-adjusted to ${adjusted.width}×${adjusted.height} from game output.`,
+    );
+    releasePressedKeys();
+    await adapter.current?.restart({
+      resolution: adjusted,
+      rotation,
+      automaticSizing: false,
+    });
+  }
+
+  function changeAutomaticSizing(enabled: boolean): void {
+    if (!selectedGame || enabled === (resolutionSource !== "manual")) return;
+
+    const activeGame = player.state === "running";
+    if (
+      enabled
+      && activeGame
+      && !window.confirm(
+        "Changing automatic fitting restarts the emulator. Unsaved progress since "
+          + "the game's last save may be lost. Continue?",
+      )
+    ) {
+      return;
+    }
+
+    const nextSource: ResolutionSource = enabled ? "detected" : "manual";
+    resolutionSourceRef.current = nextSource;
+    setResolutionSource(nextSource);
+    if (lastGame?.identity === selectedGame.identity) {
+      void storage.current
+        ?.updateGameSettings<JarReview>(selectedGame.identity, {
+          muted: selectedGame.muted,
+          resolution,
+          resolutionSource: nextSource,
+          rotation,
+        })
+        .then((updated) => setLastGame(updated))
+        .catch(() =>
+          setValidationError(
+            "The automatic fitting preference could not be saved for this game.",
+          ),
+        );
+    }
+
+    if (enabled && activeGame) {
+      autoAdjustmentInProgress.current.delete(selectedGame.identity);
+      releasePressedKeys();
+      void adapter.current?.restart({
+        resolution,
+        rotation,
+        automaticSizing: rotation === "none",
+      });
+    }
+  }
+
   function changeResolution(value: string): void {
     const next = RESOLUTION_PRESETS.find(
       (preset) => resolutionValue(preset) === value,
@@ -557,11 +1041,15 @@ export function PlayerShell() {
 
     const selected = { ...next };
     setResolution(selected);
+    resolutionRef.current = selected;
+    resolutionSourceRef.current = "manual";
+    setResolutionSource("manual");
     if (lastGame?.identity === selectedGame.identity) {
       void storage.current
         ?.updateGameSettings<JarReview>(selectedGame.identity, {
           muted: selectedGame.muted,
           resolution: selected,
+          resolutionSource: "manual",
           rotation,
         })
         .then((updated) => setLastGame(updated))
@@ -574,7 +1062,11 @@ export function PlayerShell() {
 
     if (activeGame) {
       releasePressedKeys();
-      void adapter.current?.restart({ resolution: selected, rotation });
+      void adapter.current?.restart({
+        resolution: selected,
+        rotation,
+        automaticSizing: false,
+      });
     }
   }
 
@@ -595,11 +1087,13 @@ export function PlayerShell() {
     }
 
     setRotation(next);
+    rotationRef.current = next;
     if (lastGame?.identity === selectedGame.identity) {
       void storage.current
         ?.updateGameSettings<JarReview>(selectedGame.identity, {
           muted: selectedGame.muted,
           resolution,
+          resolutionSource: resolutionSourceRef.current,
           rotation: next,
         })
         .then((updated) => setLastGame(updated))
@@ -612,7 +1106,12 @@ export function PlayerShell() {
 
     if (activeGame) {
       releasePressedKeys();
-      void adapter.current?.restart({ resolution, rotation: next });
+      void adapter.current?.restart({
+        resolution,
+        rotation: next,
+        automaticSizing:
+          resolutionSourceRef.current !== "manual" && next === "none",
+      });
     }
   }
 
@@ -631,6 +1130,7 @@ export function PlayerShell() {
   }
 
   function changeMuted(muted: boolean): void {
+    mutedRef.current = muted;
     if (selectedGame) {
       setSelectedGame({ ...selectedGame, muted });
     }
@@ -646,6 +1146,7 @@ export function PlayerShell() {
         ?.updateGameSettings<JarReview>(selectedGame.identity, {
           muted,
           resolution,
+          resolutionSource: resolutionSourceRef.current,
           rotation,
         })
         .then((updated) => setLastGame(updated))
@@ -658,25 +1159,85 @@ export function PlayerShell() {
     }
   }
 
-  function sendKey(code: string, pressed: boolean): boolean {
+  function sendKey(
+    code: string,
+    pressed: boolean,
+    source = `keyboard:${code}`,
+    kind: ActiveInput["kind"] = "keyboard",
+  ): boolean {
+    const translatedCode = translatePhysicalKey(code);
+    if (!translatedCode) return false;
+
     if (pressed) {
-      if (pressedKeys.current.has(code)) return true;
-      if (!adapter.current?.input(code, true)) return false;
-      pressedKeys.current.add(code);
+      if (pressedInputs.current.has(source)) return true;
+      const alreadyPressed = Array.from(pressedInputs.current.values())
+        .some((input) => input.code === translatedCode);
+      if (
+        !alreadyPressed
+        && !adapter.current?.inputCanonical(translatedCode, true)
+      ) {
+        return false;
+      }
+      pressedInputs.current.set(source, { kind, code: translatedCode });
     } else {
-      if (!pressedKeys.current.delete(code)) return false;
-      adapter.current?.input(code, false);
+      const activeInput = pressedInputs.current.get(source);
+      if (!activeInput) return false;
+      pressedInputs.current.delete(source);
+      const stillPressed = Array.from(pressedInputs.current.values())
+        .some((input) => input.code === activeInput.code);
+      if (!stillPressed) {
+        adapter.current?.inputCanonical(activeInput.code, false);
+      }
     }
     return true;
   }
 
   function releasePressedKeys(): void {
-    pressedKeys.current.forEach((code) => adapter.current?.input(code, false));
-    pressedKeys.current.clear();
+    new Set(
+      Array.from(pressedInputs.current.values(), (input) => input.code),
+    ).forEach((code) =>
+      adapter.current?.inputCanonical(code, false));
+    pressedInputs.current.clear();
+  }
+
+  function releaseKeyboardKeys(): void {
+    Array.from(pressedInputs.current.entries())
+      .filter(([, input]) => input.kind === "keyboard")
+      .forEach(([source, input]) => {
+        sendKey(input.code, false, source, input.kind);
+      });
   }
 
   function toggleTool(tool: Exclude<OpenTool, null>): void {
-    setOpenTool((current) => current === tool ? null : tool);
+    if (openTool === tool) {
+      closeToolDialog();
+      return;
+    }
+
+    if (document.activeElement instanceof HTMLElement) {
+      toolTrigger.current = document.activeElement;
+    }
+    setOpenTool(tool);
+  }
+
+  function closeToolDialog(): void {
+    if (toolDialog.current?.open) {
+      toolDialog.current.close();
+    } else {
+      handleToolDialogClose();
+    }
+  }
+
+  function handleToolDialogClose(): void {
+    const closedTool = openTool;
+    setOpenTool(null);
+    const trigger = toolTrigger.current;
+    toolTrigger.current = null;
+    if (closedTool === "controls" && player.state === "running") {
+      window.requestAnimationFrame(() => phone.current?.focus());
+    } else if (trigger?.isConnected) {
+      window.requestAnimationFrame(() => trigger.focus());
+    }
   }
 
   const audioNeedsInitialization =
@@ -690,14 +1251,25 @@ export function PlayerShell() {
         : audio.muted
           ? "Unmute audio"
           : "Mute audio";
+  const displayResolution = selectedGame
+    ? rotation === "counterclockwise"
+      ? { width: resolution.height, height: resolution.width }
+      : resolution
+    : { width: 16, height: 10 };
+  const playerShellStyle = {
+    "--display-width": displayResolution.width,
+    "--display-height": displayResolution.height,
+    "--display-aspect-ratio":
+      displayResolution.width / displayResolution.height,
+  } as CSSProperties;
 
   const gameStage = (
-    <section className="phone-stage" aria-label="Emulator display">
+    <section className="phone-stage" aria-label="PocketByte game display">
       <div
         ref={phone}
         className="phone"
         role="application"
-        aria-label="Java ME game display. Focus to use keyboard controls."
+        aria-label="PocketByte Java ME game display. Focus to use keyboard controls."
         tabIndex={0}
         onPointerDown={(event) => {
           event.preventDefault();
@@ -709,7 +1281,7 @@ export function PlayerShell() {
         onKeyUp={(event) => {
           if (sendKey(event.code, false)) event.preventDefault();
         }}
-        onBlur={releasePressedKeys}
+        onBlur={releaseKeyboardKeys}
       >
         <div className="screen-bezel">
           <div className="screen-status">
@@ -732,7 +1304,7 @@ export function PlayerShell() {
       <div className="stage-footer">
         <span>{selectedGame?.review.suiteName ?? selectedGame?.sourceFileName ?? "No cartridge"}</span>
         <span aria-live="polite">
-          {audio.notice ?? "Focus display · Q/W soft keys · Arrows move · Enter select"}
+          {audio.notice ?? "Ready for local play"}
         </span>
       </div>
       {player.runtimeError && <p className="runtime-alert" role="alert">{player.runtimeError}</p>}
@@ -746,18 +1318,25 @@ export function PlayerShell() {
   );
 
   return (
-    <main className={`player-shell${openTool ? " tool-is-open" : ""}`}>
+    <main className="player-shell" style={playerShellStyle}>
       {gameStage}
-      <nav className="tool-rail" aria-label="Player tools">
-        <div className="device-mark" aria-label="J2ME local player">
-          <span>J2ME</span>
-          <small>Local player</small>
+      <nav className="tool-rail" aria-label="PocketByte tools">
+        <div className="device-mark" aria-label="PocketByte local Java ME player">
+          <span>Pocket<wbr />Byte</span>
+          <small>Local Java ME player</small>
         </div>
         <div className="tool-buttons">
+          <ToolButton
+            icon="library"
+            label="Game library"
+            active={openTool === "library"}
+            onClick={() => toggleTool("library")}
+          />
           <ToolButton
             icon="cartridge"
             label="Load game"
             active={openTool === "upload"}
+            disabled={Boolean(catalogBusyId)}
             onClick={() => toggleTool("upload")}
           />
           <ToolButton
@@ -765,6 +1344,7 @@ export function PlayerShell() {
             label="Saved game"
             active={openTool === "saved"}
             indicator={Boolean(lastGame)}
+            disabled={Boolean(catalogBusyId)}
             onClick={() => toggleTool("saved")}
           />
           <ToolButton
@@ -787,38 +1367,111 @@ export function PlayerShell() {
             }}
           />
           <ToolButton
+            icon="controls"
+            label="Controls"
+            active={openTool === "controls"}
+            disabled={Boolean(catalogBusyId)}
+            onClick={() => toggleTool("controls")}
+          />
+          <ToolButton
             icon="resolution"
             label="Display size"
             active={openTool === "resolution"}
-            disabled={!selectedGame}
+            disabled={!selectedGame || Boolean(catalogBusyId)}
             onClick={() => toggleTool("resolution")}
           />
           <ToolButton
             icon="info"
             label="Game details"
             active={openTool === "details"}
-            disabled={!selectedGame}
+            disabled={!selectedGame || Boolean(catalogBusyId)}
             onClick={() => toggleTool("details")}
           />
         </div>
       </nav>
 
       {openTool && (
-        <aside className="tool-panel" aria-label={`${openTool} panel`}>
+        <dialog
+          id="tool-dialog"
+          ref={toolDialog}
+          className={`tool-panel${openTool === "library" ? " library-panel" : ""}`}
+          aria-labelledby="tool-panel-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeToolDialog();
+          }}
+          onClose={handleToolDialogClose}
+        >
           <div className="panel-heading">
             <div>
-              <p className="section-kicker">Cartridge bay</p>
-              <h2>{toolTitle(openTool)}</h2>
+              <p className="section-kicker">{toolKicker(openTool)}</p>
+              <h2 id="tool-panel-title">{toolTitle(openTool)}</h2>
             </div>
             <button
               className="panel-close"
               type="button"
               aria-label="Close tool panel"
-              onClick={() => setOpenTool(null)}
+              autoFocus
+              onClick={closeToolDialog}
             >
               <Icon name="close" />
             </button>
           </div>
+
+          {openTool === "library" && (
+            <div className="library-content">
+              <p className="library-intro">
+                Pick a cartridge to download it to this browser and play.
+              </p>
+              <div className="game-grid" aria-label="Bundled games">
+                {GAME_CATALOG.map((catalogGame) => {
+                  const busy = catalogBusyId === catalogGame.id;
+                  const blockedByOtherLaunch = Boolean(catalogBusyId && !busy);
+                  const isRunning =
+                    selectedGame?.catalogId === catalogGame.id
+                    && player.state === "running";
+                  return (
+                    <article className="game-card" key={catalogGame.id}>
+                      <button
+                        type="button"
+                        disabled={
+                          busy
+                          || blockedByOtherLaunch
+                          || isRunning
+                          || !runtimeAvailable
+                        }
+                        aria-describedby={`catalog-description-${catalogGame.id}`}
+                        onClick={() => void launchCatalogGame(catalogGame)}
+                      >
+                        <span className="game-art" aria-hidden="true">
+                          {catalogGame.artworkUrl
+                            ? <img src={catalogGame.artworkUrl} alt="" />
+                            : <CartridgePlaceholder />}
+                        </span>
+                        <span className="game-card-copy">
+                          <strong>{catalogGame.title}</strong>
+                          <span id={`catalog-description-${catalogGame.id}`}>
+                            {catalogGame.description ?? "A bundled Java ME game."}
+                          </span>
+                          <small>
+                            {busy
+                              ? "Downloading & checking…"
+                              : isRunning
+                                ? "Now playing"
+                                : "Play game"}
+                          </small>
+                        </span>
+                      </button>
+                      {catalogErrors[catalogGame.id] && (
+                        <p className="catalog-error" role="alert">
+                          {catalogErrors[catalogGame.id]}
+                        </p>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {openTool === "upload" && (
             <div className="panel-content">
@@ -844,7 +1497,7 @@ export function PlayerShell() {
                 type="button"
                 disabled={player.state !== "empty"}
                 onClick={() => {
-                  setOpenTool(null);
+                  closeToolDialog();
                   void adapter.current?.launch(fixture);
                 }}
               >
@@ -907,13 +1560,17 @@ export function PlayerShell() {
             </div>
           )}
 
+          {openTool === "controls" && <ControlsGuide />}
+
           {openTool === "resolution" && selectedGame && (
             <ResolutionControl
               resolution={resolution}
               rotation={rotation}
+              automaticSizing={resolutionSource !== "manual"}
               detectedProfile={selectedGame.review.detectedDisplayProfile}
               disabled={["loading-runtime", "launching", "restarting"].includes(player.state)}
               onChange={changeResolution}
+              onAutomaticSizingChange={changeAutomaticSizing}
               onRotationChange={changeRotation}
             />
           )}
@@ -928,7 +1585,7 @@ export function PlayerShell() {
 
           {storageNotice && <p className="storage-notice" role="status">{storageNotice}</p>}
           {validationError && <p className="alert" role="alert">{validationError}</p>}
-        </aside>
+        </dialog>
       )}
 
     </main>
@@ -941,7 +1598,9 @@ type IconName =
   | "audio-off"
   | "cartridge"
   | "close"
+  | "controls"
   | "info"
+  | "library"
   | "muted"
   | "resolution"
   | "save";
@@ -1005,6 +1664,10 @@ function Icon({ name }: { name: IconName }) {
         <path {...common} d="M4 4h13l3 3v13H4z" />
         <path {...common} d="M8 4v6h8V4M8 20v-6h8v6" />
       </>}
+      {name === "library" && <>
+        <path {...common} d="M4 5.5h6v13H4zM14 5.5h6v13h-6z" />
+        <path {...common} d="M6.5 8.5h1M16.5 8.5h1M6.5 15.5h1M16.5 15.5h1" />
+      </>}
       {name === "resolution" && <>
         <rect {...common} x="3.5" y="5" width="17" height="14" />
         <path {...common} d="M7 9V7h2M15 7h2v2M17 15v2h-2M9 17H7v-2" />
@@ -1012,6 +1675,10 @@ function Icon({ name }: { name: IconName }) {
       {name === "info" && <>
         <circle {...common} cx="12" cy="12" r="8.5" />
         <path {...common} d="M12 10.5V17M12 7v.5" />
+      </>}
+      {name === "controls" && <>
+        <path {...common} d="M7.5 8h9a4 4 0 013.8 2.8l1.1 3.7a2.7 2.7 0 01-4.3 2.8l-2.2-1.8H9.1l-2.2 1.8a2.7 2.7 0 01-4.3-2.8l1.1-3.7A4 4 0 017.5 8z" />
+        <path {...common} d="M7.5 11v4M5.5 13h4M16.5 11.5v.1M18.5 14v.1" />
       </>}
       {(name === "audio" || name === "audio-idle" || name === "muted" || name === "audio-off") && <>
         <path {...common} d="M4 10h4l4-4v12l-4-4H4z" />
@@ -1034,32 +1701,99 @@ const TOOL_LABELS: Record<IconName, string> = {
   "audio-off": "AUDIO",
   cartridge: "JAR",
   close: "CLOSE",
+  controls: "CTRL",
   info: "INFO",
+  library: "GAMES",
   muted: "AUDIO",
   resolution: "SIZE",
   save: "SAVE",
 };
 
 function toolTitle(tool: Exclude<OpenTool, null>): string {
+  if (tool === "library") return "Game library";
   if (tool === "upload") return "Load game";
   if (tool === "saved") return "Saved game";
+  if (tool === "controls") return "Controls";
   if (tool === "resolution") return "Display size";
   return "Game details";
+}
+
+function toolKicker(tool: Exclude<OpenTool, null>): string {
+  if (tool === "library") return "Ready to play";
+  return tool === "controls" ? "Player guide" : "Cartridge bay";
+}
+
+function CartridgePlaceholder() {
+  return (
+    <svg viewBox="0 0 96 72" aria-hidden="true">
+      <path d="M20 7h49l7 7v51H20z" />
+      <path d="M29 7v18h38V7M29 47h38M34 65V51M45 65V51M56 65V51M67 65V51" />
+      <path className="placeholder-label" d="M35 31h26v9H35z" />
+    </svg>
+  );
+}
+
+function ControlsGuide() {
+  return (
+    <div className="controls-guide">
+      <section aria-labelledby="keyboard-controls-heading">
+        <p className="section-kicker">Desktop</p>
+        <h3 id="keyboard-controls-heading">Keyboard</h3>
+        <dl className="control-map">
+          <ControlMapping action="Move" keys={["WASD", "Arrow keys"]} />
+          <ControlMapping action="Action / OK" keys={["Space", "Enter"]} />
+          <ControlMapping action="Left / right soft key" keys={["Q", "E"]} />
+          <ControlMapping action="Phone keypad" keys={["0–9"]} />
+          <ControlMapping action="* / #" keys={["Z", "X"]} />
+          <ControlMapping action="Emulator menu" keys={["Esc"]} />
+        </dl>
+      </section>
+      <section aria-labelledby="gamepad-controls-heading">
+        <p className="section-kicker">Standard controller</p>
+        <h3 id="gamepad-controls-heading">Gamepad</h3>
+        <dl className="control-map">
+          <ControlMapping action="Move" keys={["D-pad", "Left stick"]} />
+          <ControlMapping action="Action / OK" keys={["A / Cross"]} />
+          <ControlMapping action="Left soft key" keys={["Left bumper"]} />
+          <ControlMapping action="Right soft key" keys={["Right bumper"]} />
+          <ControlMapping action="Emulator menu" keys={["Start"]} />
+        </dl>
+        <p className="controls-note">
+          Use the keyboard when a game asks for phone keys 0–9, * or #.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function ControlMapping({ action, keys }: { action: string; keys: string[] }) {
+  return (
+    <div>
+      <dt>{action}</dt>
+      <dd>
+        {keys.map((key) => <kbd key={key}>{key}</kbd>)}
+      </dd>
+    </div>
+  );
 }
 
 function ResolutionControl({
   resolution,
   rotation,
+  automaticSizing,
   detectedProfile,
   disabled,
   onChange,
+  onAutomaticSizingChange,
   onRotationChange,
 }: {
   resolution: LogicalResolution;
   rotation: GameRotation;
+  automaticSizing: boolean;
   detectedProfile?: JarReview["detectedDisplayProfile"];
   disabled: boolean;
   onChange: (value: string) => void;
+  onAutomaticSizingChange: (enabled: boolean) => void;
   onRotationChange: (rotateOutput: boolean) => void;
 }) {
   return (
@@ -1090,12 +1824,25 @@ function ResolutionControl({
       <label className="rotation-control">
         <input
           type="checkbox"
+          checked={automaticSizing}
+          disabled={disabled}
+          onChange={(event) =>
+            onAutomaticSizingChange(event.currentTarget.checked)}
+        />
+        <span>Automatically fit game output</span>
+      </label>
+      <label className="rotation-control">
+        <input
+          type="checkbox"
           checked={rotation === "counterclockwise"}
           disabled={disabled}
           onChange={(event) => onRotationChange(event.currentTarget.checked)}
         />
         <span>Rotate game output</span>
       </label>
+      {automaticSizing && rotation === "counterclockwise" && (
+        <p>Automatic fitting is paused while output rotation is enabled.</p>
+      )}
       <p>Logical pixels. Display scaling keeps the original proportions.</p>
     </div>
   );
@@ -1210,8 +1957,35 @@ function supportedResolution(resolution: LogicalResolution): LogicalResolution {
   ) ?? DEFAULT_RESOLUTION;
 }
 
+function isSmallerSameOrientation(
+  candidate: LogicalResolution,
+  current: LogicalResolution,
+): boolean {
+  return candidate.width <= current.width
+    && candidate.height <= current.height
+    && (
+      candidate.width < current.width || candidate.height < current.height
+    )
+    && (candidate.width <= candidate.height)
+      === (current.width <= current.height)
+    && RESOLUTION_PRESETS.some(
+      ({ width, height }) =>
+        width === candidate.width && height === candidate.height,
+    );
+}
+
 function displayGameName(game: CachedGame<JarReview>): string {
   return game.metadata.suiteName ?? game.sourceFileName;
+}
+
+function midletSelection(
+  midlet: JarReview["midlets"][number],
+): MidletSelection {
+  return {
+    name: midlet.name,
+    className: midlet.className,
+    ...(midlet.icon ? { iconPath: midlet.icon } : {}),
+  };
 }
 
 function failureStageLabel(stage: string): string {
@@ -1225,4 +1999,12 @@ function failureStageLabel(stage: string): string {
     default:
       return "Launch failed";
   }
+}
+
+function omitKey(
+  source: Record<string, string>,
+  key: string,
+): Record<string, string> {
+  const { [key]: _removed, ...rest } = source;
+  return rest;
 }

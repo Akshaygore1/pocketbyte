@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Java ME runtime frame</title>
+    <title>PocketByte runtime</title>
     <style>
       html, body { height: 100%; margin: 0; background: #101820; color: #eef6ff; font-family: system-ui, sans-serif; }
       #fixture { display: grid; grid-template-rows: 1fr auto; height: 100%; text-align: center; }
@@ -13,7 +13,7 @@
   </head>
   <body>
     <div id="fixture" hidden>
-      <iframe id="engine" title="FreeJ2ME-Web CheerpJ runtime"></iframe>
+      <iframe id="engine" title="PocketByte runtime powered by FreeJ2ME-Web and CheerpJ"></iframe>
       <p id="status">Redistributable smoke fixture</p>
     </div>
     <script type="module">
@@ -26,6 +26,9 @@
       let launchUrl = null;
       let dataOperation = null;
       let readinessTimer = null;
+      let resolutionObservationTimer = null;
+      let removeObservationInputListeners = null;
+      let launchHadUserInput = false;
       const post = (type, details = {}) => parent.postMessage({ source: FRAME_SOURCE, session, type, ...details }, location.origin);
 
       const engine = document.querySelector("#engine");
@@ -51,6 +54,199 @@
         readinessTimer = null;
       };
 
+      const stopResolutionObservation = () => {
+        if (resolutionObservationTimer !== null) {
+          clearInterval(resolutionObservationTimer);
+        }
+        resolutionObservationTimer = null;
+        removeObservationInputListeners?.();
+        removeObservationInputListeners = null;
+      };
+
+      const observeLaunchInput = () => {
+        removeObservationInputListeners?.();
+        const engineDocument = engine.contentDocument;
+        const stopForInput = () => {
+          launchHadUserInput = true;
+          stopResolutionObservation();
+        };
+        const inputEvents = ["keydown", "mousedown", "pointerdown", "touchstart"];
+        inputEvents.forEach((type) =>
+          engineDocument?.addEventListener(type, stopForInput, {
+            capture: true,
+            passive: true,
+          }),
+        );
+        removeObservationInputListeners = () => inputEvents.forEach((type) =>
+          engineDocument?.removeEventListener(type, stopForInput, true),
+        );
+      };
+
+      const sameOrientation = (left, right) =>
+        (left.width <= left.height) === (right.width <= right.height);
+
+      const pixelDiffers = (pixels, offset, reference) =>
+        Math.abs(pixels[offset] - reference[0]) > 3
+        || Math.abs(pixels[offset + 1] - reference[1]) > 3
+        || Math.abs(pixels[offset + 2] - reference[2]) > 3
+        || Math.abs(pixels[offset + 3] - reference[3]) > 3;
+
+      const imageHasMeaningfulContent = (image) => {
+        const { data, width, height } = image;
+        const referenceOffset = ((height - 1) * width + width - 1) * 4;
+        const reference = [
+          data[referenceOffset],
+          data[referenceOffset + 1],
+          data[referenceOffset + 2],
+          data[referenceOffset + 3],
+        ];
+        const sampleStep = 4;
+        const minimumDifferences = Math.max(
+          16,
+          Math.floor((width * height) / (sampleStep * sampleStep) * 0.001),
+        );
+        let differences = 0;
+        for (let y = 0; y < height; y += sampleStep) {
+          for (let x = 0; x < width; x += sampleStep) {
+            if (pixelDiffers(data, (y * width + x) * 4, reference)) {
+              differences += 1;
+              if (differences >= minimumDifferences) return true;
+            }
+          }
+        }
+        return false;
+      };
+
+      const candidateMatchesRenderedBounds = (image, candidate) => {
+        const { data, width, height } = image;
+        const referenceOffset = ((height - 1) * width + width - 1) * 4;
+        const reference = [
+          data[referenceOffset],
+          data[referenceOffset + 1],
+          data[referenceOffset + 2],
+          data[referenceOffset + 3],
+        ];
+        let outsidePixels = 0;
+        let outsideDifferences = 0;
+        let insideDifferences = 0;
+        const edgeDifferences = { top: 0, right: 0, bottom: 0, left: 0 };
+        const edgeDepth = Math.max(
+          2,
+          Math.min(4, Math.floor(Math.min(candidate.width, candidate.height) * 0.015)),
+        );
+
+        for (let y = 0; y < height; y += 1) {
+          for (let x = 0; x < width; x += 1) {
+            const differs = pixelDiffers(data, (y * width + x) * 4, reference);
+            if (x >= candidate.width || y >= candidate.height) {
+              outsidePixels += 1;
+              if (differs) outsideDifferences += 1;
+              continue;
+            }
+            if (!differs) continue;
+            insideDifferences += 1;
+            if (y < edgeDepth) edgeDifferences.top += 1;
+            if (x >= candidate.width - edgeDepth) edgeDifferences.right += 1;
+            if (y >= candidate.height - edgeDepth) edgeDifferences.bottom += 1;
+            if (x < edgeDepth) edgeDifferences.left += 1;
+          }
+        }
+
+        const maximumOutsideNoise = Math.max(2, outsidePixels * 0.0005);
+        const minimumInteriorContent = Math.max(
+          64,
+          candidate.width * candidate.height * 0.005,
+        );
+        const minimumHorizontalEdgeContent = Math.max(3, candidate.width * 0.01);
+        const minimumVerticalEdgeContent = Math.max(3, candidate.height * 0.01);
+        return outsideDifferences <= maximumOutsideNoise
+          && insideDifferences >= minimumInteriorContent
+          && edgeDifferences.top >= minimumHorizontalEdgeContent
+          && edgeDifferences.bottom >= minimumHorizontalEdgeContent
+          && edgeDifferences.left >= minimumVerticalEdgeContent
+          && edgeDifferences.right >= minimumVerticalEdgeContent;
+      };
+
+      const startResolutionObservation = (canvas) => {
+        stopResolutionObservation();
+        if (
+          launchKind !== "midlet"
+          || !midlet?.automaticSizing
+          || midlet.rotation !== "none"
+          || launchHadUserInput
+        ) {
+          return;
+        }
+
+        const candidates = midlet.supportedResolutions
+          .filter((candidate) =>
+            Number.isInteger(candidate.width)
+            && Number.isInteger(candidate.height)
+            && candidate.width <= canvas.width
+            && candidate.height <= canvas.height
+            && (candidate.width < canvas.width || candidate.height < canvas.height)
+            && sameOrientation(candidate, {
+              width: canvas.width,
+              height: canvas.height,
+            }),
+          )
+          .sort((left, right) =>
+            left.width * left.height - right.width * right.height,
+          );
+        if (candidates.length === 0) return;
+
+        observeLaunchInput();
+
+        const waitingStartedAt = performance.now();
+        let renderingStartedAt = null;
+        let stableValue = null;
+        let stableSamples = 0;
+        resolutionObservationTimer = setInterval(() => {
+          const now = performance.now();
+          if (launchHadUserInput || now - waitingStartedAt > 60_000) {
+            stopResolutionObservation();
+            return;
+          }
+
+          let image;
+          try {
+            image = canvas.getContext("2d", { willReadFrequently: true })
+              ?.getImageData(0, 0, canvas.width, canvas.height);
+          } catch {
+            stopResolutionObservation();
+            return;
+          }
+          if (!image) return;
+          if (renderingStartedAt === null) {
+            if (!imageHasMeaningfulContent(image)) return;
+            renderingStartedAt = now;
+          } else if (now - renderingStartedAt > 1_500) {
+            stopResolutionObservation();
+            return;
+          }
+
+          const match = candidates.find((candidate) =>
+            candidateMatchesRenderedBounds(image, candidate),
+          );
+          const matchedResolutionKey = match
+            ? `${match.width}x${match.height}`
+            : null;
+          if (matchedResolutionKey && matchedResolutionKey === stableValue) {
+            stableSamples += 1;
+          } else {
+            stableValue = matchedResolutionKey;
+            stableSamples = matchedResolutionKey ? 1 : 0;
+          }
+          if (match && stableSamples >= 4) {
+            stopResolutionObservation();
+            post("runtime-resolution-suggested", {
+              identity: midlet.identity,
+              resolution: { width: match.width, height: match.height },
+            });
+          }
+        }, 150);
+      };
+
       const releaseLaunchUrl = () => {
         if (launchUrl) URL.revokeObjectURL(launchUrl);
         launchUrl = null;
@@ -58,6 +254,7 @@
 
       const waitForRenderedLaunch = () => {
         stopReadinessCheck();
+        observeLaunchInput();
         const startedAt = Date.now();
         readinessTimer = setInterval(() => {
           const canvas = engine.contentDocument?.querySelector("#display");
@@ -82,6 +279,7 @@
             );
             status.textContent = fixture.name;
             post("running", { fixtureName: fixture.name });
+            startResolutionObservation(canvas);
           } else if (Date.now() - startedAt > 60_000) {
             stopReadinessCheck();
             post("failed", {
@@ -93,6 +291,8 @@
       };
 
       const launchFixture = () => {
+        stopResolutionObservation();
+        launchHadUserInput = false;
         launchKind = "fixture";
         midlet = null;
         document.querySelector("#fixture").hidden = false;
@@ -103,6 +303,8 @@
       };
 
       const launchMidlet = (selectedMidlet) => {
+        stopResolutionObservation();
+        launchHadUserInput = false;
         launchKind = "midlet";
         midlet = selectedMidlet;
         fixture = { name: midlet.name };
@@ -132,6 +334,8 @@
 
       const manageGameData = (command) => {
         stopReadinessCheck();
+        stopResolutionObservation();
+        launchHadUserInput = false;
         releaseLaunchUrl();
         launchKind = "data-operation";
         fixture = null;
@@ -180,6 +384,7 @@
         }
         if (message.type === "failed") {
           stopReadinessCheck();
+          stopResolutionObservation();
           if (dataOperation) {
             post("game-data-operation-failed", {
               requestId: dataOperation.requestId,
@@ -213,6 +418,14 @@
           && typeof command.midlet.className === "string"
           && Number.isInteger(command.midlet.resolution?.width)
           && Number.isInteger(command.midlet.resolution?.height)
+          && typeof command.midlet.automaticSizing === "boolean"
+          && Array.isArray(command.midlet.supportedResolutions)
+          && command.midlet.supportedResolutions.every((resolution) =>
+            Number.isInteger(resolution?.width)
+            && Number.isInteger(resolution?.height)
+            && resolution.width > 0
+            && resolution.height > 0
+          )
           && (command.midlet.rotation === "none"
             || command.midlet.rotation === "counterclockwise")
         ) {
@@ -239,6 +452,8 @@
           engine.contentDocument?.querySelector("#display")?.focus();
         }
         if (command.type === "input") {
+          launchHadUserInput = true;
+          stopResolutionObservation();
           const canvas = engine.contentDocument?.querySelector("#display");
           const type = command.pressed ? "keydown" : "keyup";
           canvas?.dispatchEvent(new KeyboardEvent(type, {
@@ -254,6 +469,7 @@
         }
         if (command.type === "teardown") {
           stopReadinessCheck();
+          stopResolutionObservation();
           releaseLaunchUrl();
           dataOperation = null;
           engine.src = "about:blank";

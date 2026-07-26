@@ -1,17 +1,20 @@
-# freej2me-web
-Here it is.. the browser version of my [fork of freej2me](https://github.com/zb3/freej2me)!  
+# PocketByte
 
-This uses [CheerpJ](https://cheerpj.com/) (pretty cool) to run Java in a web browser :)
-Running in the browser means you can now safely load any JAR file, since malicious JAR files won't be able to cause any damage thanks to the web platform sandbox.
+PocketByte is a private, browser-based Java ME game player. It runs local JAR
+files through [FreeJ2ME-Web](https://github.com/zb3/freej2me-web), a browser
+port of [FreeJ2ME](https://github.com/zb3/freej2me), powered by
+[CheerpJ](https://cheerpj.com/). Running in the browser keeps games inside the
+web platform sandbox.
 
 ## Let's play!
-https://zb3.github.io/freej2me-web/
+Launch PocketByte from the app's hosted URL or serve the project locally as
+described below.
 
 
 ### Keyboard controls
 | **Key** | **Functions As** |
 | :------------: | :--------------: |
-| <kbd>Esc</kbd> | Enter/exit freej2me options |
+| <kbd>Esc</kbd> | Enter/exit FreeJ2ME options |
 | <kbd>F1</kbd> or <kbd>Q</kbd> | Left soft key |
 | <kbd>F2</kbd> or <kbd>W</kbd> | Right soft key |
 | <kbd>0</kbd> to <kbd>9</kbd> | Keypad Numbers |
@@ -25,7 +28,7 @@ https://zb3.github.io/freej2me-web/
 | <kbd>⏎ Enter</kbd> | Action key (OK button) |
 
 #### Phone types and key mappings
-Keys like left/right soft, arrows and the action key have different vendor-specific mappings. By default, freej2me uses the most common **Nokia** mapping, but this can be changed in settings by changing the `Phone type`. Note that in the `Standard` phone, arrow keys are mapped to 2, 4, 6, 8 and the enter key is mapped to 5.
+Keys like left/right soft, arrows and the action key have different vendor-specific mappings. By default, the bundled FreeJ2ME runtime uses the most common **Nokia** mapping, but this can be changed in settings by changing the `Phone type`. Note that in the `Standard` phone, arrow keys are mapped to 2, 4, 6, 8 and the enter key is mapped to 5.
 
 When using the numpad keys, the 123 and 789 rows are swapped so as to resemble the key layout on a mobile phone.
 
@@ -39,7 +42,7 @@ If it still doesn't work you can get more information by looking at the console.
 
 
 ## What's inside
-* My fork of FreeJ2ME
+* FreeJ2ME-Web, the Java ME runtime that powers PocketByte
 
 * Graphics APIs implemented in JS using 2d canvas rendering context (faster than CheerpJ AWT)
 
@@ -83,8 +86,11 @@ Thanks to CheerpJ requirements regarding requests with the `Range` header, this 
 npx serve -u web
 ```
 
-## CheerpJ?
-freej2me-web currently works in the browser thanks to CheerpJ. However, since CheerpJ is proprietary, it introduces some limitations.. notably freej2me-web will not work without an internet connection, and it can be a little slow..
+## CheerpJ
+
+PocketByte works in the browser thanks to CheerpJ. Since CheerpJ is proprietary,
+it introduces some limitations: PocketByte will not work without an internet
+connection, and it can be a little slow.
 
 ### Product runtime boundary
 
@@ -109,23 +115,30 @@ pinned CheerpJ runtime assets needed to run the emulator. See
 [`docs/security/guest-network-denial.md`](docs/security/guest-network-denial.md)
 for the boundary and verification plan.
 
-However, freej2me-web intentionally doesn't use its more advanced features like AWT GUI support or wasm JNI modules. In theory it should be possible to port it to a simpler (but most likely slower) VM if CheerpJ stops being available... but it's not planned for now.
+The bundled FreeJ2ME-Web runtime intentionally does not use CheerpJ's more
+advanced features, such as AWT GUI support or wasm JNI modules. In theory it
+could be ported to a simpler (but likely slower) VM if CheerpJ stops being
+available, but that is not planned.
 
 ## Embedding
-To embed a specific game on your website, you first need to self-host this emulator. The `web` directory should be served, but ensure your server properly supports the `Range` header.
+To embed a specific game on your website, first self-host PocketByte. The `web`
+directory should be served, but ensure your server properly supports the
+`Range` header.
 
-When you want to embed a game, you of course want it to work.. however, a JAR file (even with a JAD descriptor) is often not enough to make it work, because the emulator needs to know the screen size, phone type, and potentially other specific configuration settings. You might even need to preload some RMS data..
+When you want to embed a game, a JAR file (even with a JAD descriptor) is often
+not enough: PocketByte needs to know the screen size, phone type, and potentially
+other configuration settings. You might even need to preload RMS data.
 
 Therefore, you must first prepare a `.zip` file for each game as follows:
 
 1.  Install the game within the launcher screen.
-2.  Tweak emulator settings as needed.
+2.  Tweak PocketByte settings as needed.
 3.  Configure the game if necessary.
 4.  Click "Export Data".
 5.  Identify the App ID: Launch the application and observe the `app` parameter in the URL.
 6.  Locate the App ID folder**: Find the folder named after the App ID within the exported `.zip` file.
 7.  **Create the game's `.zip` file**: Compress all contents of that App ID folder into a new `.zip` file named after the App ID (`[app_id].zip`).
-8.  **Place the `.zip` file**: Put this newly created `.zip` file into the `apps` folder of your hosted emulator (`run.html` and the `apps` folder should be in the same directory)
+8.  **Place the `.zip` file**: Put this newly created `.zip` file into the `apps` folder of your hosted PocketByte instance (`run.html` and the `apps` folder should be in the same directory)
 
 Once prepared, you can embed the game directly using `run.html?app=[app_id]` without requiring the user to visit the launcher page first.
 

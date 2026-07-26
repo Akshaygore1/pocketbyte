@@ -22,6 +22,11 @@ export type RuntimeLifecycleEvent =
   | { type: "audio-initializing" }
   | { type: "audio-ready"; muted: boolean }
   | { type: "media-warning"; message: string }
+  | {
+      type: "runtime-resolution-suggested";
+      identity: string;
+      resolution: LogicalResolution;
+    }
   | { type: "failed"; stage: string; message: string }
   | { type: "diagnostics"; message: string }
   | { type: "teardown" };
@@ -37,6 +42,8 @@ export interface MidletLaunch {
   jarBytes: Uint8Array;
   resolution: LogicalResolution;
   rotation: GameRotation;
+  automaticSizing: boolean;
+  supportedResolutions: readonly LogicalResolution[];
   muted: boolean;
 }
 
@@ -59,7 +66,8 @@ export interface RuntimeAdapter {
   focus(): void;
   input(code: string, pressed: boolean): boolean;
   restart(
-    display?: Pick<MidletLaunch, "resolution" | "rotation">,
+    display?: Pick<MidletLaunch, "resolution" | "rotation">
+      & Partial<Pick<MidletLaunch, "automaticSizing">>,
   ): Promise<void>;
   reset(): void;
   diagnostics(): void;
@@ -72,9 +80,22 @@ const PHYSICAL_KEY_MAP = new Map<string, string>([
   ["ArrowDown", "ArrowDown"],
   ["ArrowLeft", "ArrowLeft"],
   ["ArrowRight", "ArrowRight"],
+  ["KeyW", "ArrowUp"],
+  ["KeyS", "ArrowDown"],
+  ["KeyA", "ArrowLeft"],
+  ["KeyD", "ArrowRight"],
   ["Enter", "Enter"],
-  ["KeyQ", "KeyQ"],
-  ["KeyW", "KeyW"],
+  ["Space", "Enter"],
+  ["Escape", "Escape"],
+  ["KeyQ", "F1"],
+  ["KeyE", "F2"],
+  ["KeyZ", "NumpadMultiply"],
+  ["KeyX", "NumpadDivide"],
+  ["KeyR", "NumpadDivide"],
+  ["F1", "F1"],
+  ["F2", "F2"],
+  ["NumpadMultiply", "NumpadMultiply"],
+  ["NumpadDivide", "NumpadDivide"],
   ["Digit0", "Digit0"],
   ["Digit1", "Digit1"],
   ["Digit2", "Digit2"],
@@ -85,9 +106,8 @@ const PHYSICAL_KEY_MAP = new Map<string, string>([
   ["Digit7", "Digit7"],
   ["Digit8", "Digit8"],
   ["Digit9", "Digit9"],
-  ["KeyE", "KeyE"],
-  ["KeyR", "KeyR"],
 ]);
+const CANONICAL_KEY_CODES = new Set(PHYSICAL_KEY_MAP.values());
 
 export function translatePhysicalKey(code: string): string | null {
   return PHYSICAL_KEY_MAP.get(code) ?? null;
@@ -147,6 +167,28 @@ function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
       const message = stringField(value, "message");
       return message ? { type: "media-warning", message } : null;
     }
+    case "runtime-resolution-suggested": {
+      const identity = stringField(value, "identity");
+      const resolution = value.resolution;
+      return identity
+        && /^[a-f0-9]{64}$/.test(identity)
+        && isRecord(resolution)
+        && typeof resolution.width === "number"
+        && typeof resolution.height === "number"
+        && Number.isInteger(resolution.width)
+        && Number.isInteger(resolution.height)
+        && Number(resolution.width) > 0
+        && Number(resolution.height) > 0
+        ? {
+            type: "runtime-resolution-suggested",
+            identity,
+            resolution: {
+              width: Number(resolution.width),
+              height: Number(resolution.height),
+            },
+          }
+        : null;
+    }
     case "failed": {
       const stage = stringField(value, "stage");
       const message = stringField(value, "message");
@@ -201,7 +243,7 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
 
     this.#session = crypto.randomUUID();
     const frame = this.#frameFactory.create();
-    frame.title = "Java ME runtime";
+    frame.title = "PocketByte game runtime";
     frame.setAttribute("data-runtime-frame", "");
     frame.addEventListener("load", () => this.command({ type: "initialize" }), {
       once: true,
@@ -258,12 +300,18 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
   input(code: string, pressed: boolean): boolean {
     const translatedCode = translatePhysicalKey(code);
     if (!translatedCode) return false;
-    this.command({ type: "input", code: translatedCode, pressed });
+    return this.inputCanonical(translatedCode, pressed);
+  }
+
+  inputCanonical(code: string, pressed: boolean): boolean {
+    if (!CANONICAL_KEY_CODES.has(code)) return false;
+    this.command({ type: "input", code, pressed });
     return true;
   }
 
   async restart(
-    display?: Pick<MidletLaunch, "resolution" | "rotation">,
+    display?: Pick<MidletLaunch, "resolution" | "rotation">
+      & Partial<Pick<MidletLaunch, "automaticSizing">>,
   ): Promise<void> {
     const launchName = this.#lastMidlet?.name ?? this.#lastFixture?.name;
     if (!launchName) return;
@@ -356,6 +404,32 @@ export class CheerpJFrameRuntimeAdapter implements RuntimeAdapter {
 
     const event = parseFrameEvent(message.data);
     if (!event) return;
+
+    if (event.type === "runtime-resolution-suggested") {
+      const current = this.#lastMidlet;
+      const candidateIsSupported = current?.supportedResolutions.some(
+        ({ width, height }) =>
+          width === event.resolution.width && height === event.resolution.height,
+      );
+      const sameOrientation = current
+        && (current.resolution.width <= current.resolution.height)
+          === (event.resolution.width <= event.resolution.height);
+      if (
+        !current?.automaticSizing
+        || current.rotation !== "none"
+        || event.identity !== current.identity
+        || !candidateIsSupported
+        || !sameOrientation
+        || event.resolution.width > current.resolution.width
+        || event.resolution.height > current.resolution.height
+        || (
+          event.resolution.width === current.resolution.width
+          && event.resolution.height === current.resolution.height
+        )
+      ) {
+        return;
+      }
+    }
 
     this.emit(event);
     if (event.type === "runtime-ready" && this.#restartPending) {

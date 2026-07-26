@@ -1,10 +1,13 @@
 import type { GameRotation, LogicalResolution } from "../runtime/runtimeAdapter";
 
 export type GameResolution = LogicalResolution;
+export type ResolutionSource = "detected" | "runtime-content" | "manual";
 
 export interface GameSettings {
   muted: boolean;
   resolution: GameResolution;
+  /** Absent on older records, which are treated as automatically sized. */
+  resolutionSource?: ResolutionSource;
   /** Absent only on records cached before per-game rotation was introduced. */
   rotation?: GameRotation;
 }
@@ -43,6 +46,7 @@ export interface GameStorage {
     identity: string,
   ): Promise<CachedGame<Metadata> | null>;
   getLastGame<Metadata = unknown>(): Promise<CachedGame<Metadata> | null>;
+  setLastGame(identity: string | null): Promise<void>;
   updateGameSettings<Metadata = unknown>(
     identity: string,
     settings: GameSettings,
@@ -256,6 +260,19 @@ class IndexedDbGameStorage implements GameStorage {
     );
 
     return lastGame ? this.getGame<Metadata>(lastGame.identity) : null;
+  }
+
+  async setLastGame(identity: string | null): Promise<void> {
+    const database = await this.#database;
+    const transaction = database.transaction(STATE_STORE, "readwrite");
+    const completed = transactionComplete(transaction);
+    const store = transaction.objectStore(STATE_STORE);
+    if (identity) {
+      store.put({ key: "lastGame", identity } satisfies LastGameRecord);
+    } else {
+      store.delete("lastGame");
+    }
+    await completed;
   }
 
   async updateGameSettings<Metadata = unknown>(
