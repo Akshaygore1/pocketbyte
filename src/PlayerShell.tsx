@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 
 import {
   CheerpJFrameRuntimeAdapter,
@@ -51,9 +57,38 @@ interface AudioView {
 }
 
 interface ActiveInput {
-  kind: "keyboard" | "gamepad";
+  kind: "keyboard" | "gamepad" | "pointer";
   code: string;
 }
+
+interface KeypadKey {
+  label: string;
+  accessibleName: string;
+  code: string;
+  mark?: string;
+}
+
+const KEYPAD_SESSION_KEY = "pocketbyte.mobile-keypad-expanded";
+const KEYPAD_ID = "mobile-phone-keypad";
+const SOFT_KEYS: readonly KeypadKey[] = [
+  { label: "SOFT", accessibleName: "Left soft key", code: "F1" },
+  { label: "OK", accessibleName: "OK", code: "Enter" },
+  { label: "SOFT", accessibleName: "Right soft key", code: "F2" },
+];
+const NUMBER_KEYS: readonly KeypadKey[] = [
+  { label: "1", accessibleName: "1", code: "Digit1" },
+  { label: "2", accessibleName: "2", code: "Digit2", mark: "▲" },
+  { label: "3", accessibleName: "3", code: "Digit3" },
+  { label: "4", accessibleName: "4", code: "Digit4", mark: "◀" },
+  { label: "5", accessibleName: "5", code: "Digit5", mark: "●" },
+  { label: "6", accessibleName: "6", code: "Digit6", mark: "▶" },
+  { label: "7", accessibleName: "7", code: "Digit7" },
+  { label: "8", accessibleName: "8", code: "Digit8", mark: "▼" },
+  { label: "9", accessibleName: "9", code: "Digit9" },
+  { label: "*", accessibleName: "Star", code: "NumpadMultiply" },
+  { label: "0", accessibleName: "0", code: "Digit0" },
+  { label: "#", accessibleName: "Hash", code: "NumpadDivide" },
+];
 
 type OpenTool =
   | "upload"
@@ -204,6 +239,16 @@ export function PlayerShell() {
     useState<ResolutionSource>("detected");
   const [audio, setAudio] = useState<AudioView>(() => initialAudioView(false));
   const [openTool, setOpenTool] = useState<OpenTool>("upload");
+  const [keypadExpanded, setKeypadExpanded] = useState(() => {
+    try {
+      return sessionStorage.getItem(KEYPAD_SESSION_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [pressedPointerCodes, setPressedPointerCodes] = useState<Set<string>>(
+    () => new Set(),
+  );
   const activeGameIdentity = useRef<string | null>(null);
   activeGameIdentity.current = selectedGame?.identity ?? null;
 
@@ -289,7 +334,11 @@ export function PlayerShell() {
   }, [player.state, runtimeAvailable, selectedGame]);
 
   useEffect(() => {
-    if (player.state === "running") phone.current?.focus();
+    if (player.state === "running") {
+      phone.current?.focus();
+    } else {
+      releasePointerKeys();
+    }
   }, [player.state]);
 
   useEffect(() => {
@@ -299,6 +348,20 @@ export function PlayerShell() {
       sendKey(code, pressed, source, "gamepad");
     });
   }, [player.state]);
+
+  useEffect(() => {
+    const releaseInterruptedPointers = () => releasePointerKeys();
+    const releaseHiddenPointers = () => {
+      if (document.visibilityState !== "visible") releasePointerKeys();
+    };
+    window.addEventListener("blur", releaseInterruptedPointers);
+    document.addEventListener("visibilitychange", releaseHiddenPointers);
+    return () => {
+      window.removeEventListener("blur", releaseInterruptedPointers);
+      document.removeEventListener("visibilitychange", releaseHiddenPointers);
+      releasePointerKeys();
+    };
+  }, []);
 
   async function inspectSelectedJar(file: File | undefined): Promise<void> {
     if (!file) return;
@@ -1006,11 +1069,59 @@ export function PlayerShell() {
   }
 
   function releaseKeyboardKeys(): void {
+    releaseInputs("keyboard");
+  }
+
+  function releaseInputs(kind: ActiveInput["kind"]): void {
     Array.from(pressedInputs.current.entries())
-      .filter(([, input]) => input.kind === "keyboard")
+      .filter(([, input]) => input.kind === kind)
       .forEach(([source, input]) => {
         sendKey(input.code, false, source, input.kind);
       });
+  }
+
+  function syncPressedPointerCodes(): void {
+    setPressedPointerCodes(new Set(
+      Array.from(pressedInputs.current.values())
+        .filter((input) => input.kind === "pointer")
+        .map((input) => input.code),
+    ));
+  }
+
+  function pressPointerKey(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    code: string,
+  ): void {
+    event.preventDefault();
+    if (player.state !== "running") return;
+    const source = `keypad:${event.pointerId}`;
+    if (pressedInputs.current.has(source)) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (sendKey(code, true, source, "pointer")) syncPressedPointerCodes();
+  }
+
+  function releasePointerKey(pointerId: number): void {
+    const source = `keypad:${pointerId}`;
+    const activeInput = pressedInputs.current.get(source);
+    if (!activeInput || activeInput.kind !== "pointer") return;
+    sendKey(activeInput.code, false, source, "pointer");
+    syncPressedPointerCodes();
+  }
+
+  function releasePointerKeys(): void {
+    releaseInputs("pointer");
+    setPressedPointerCodes(new Set());
+  }
+
+  function toggleKeypad(): void {
+    const nextExpanded = !keypadExpanded;
+    if (!nextExpanded) releasePointerKeys();
+    setKeypadExpanded(nextExpanded);
+    try {
+      sessionStorage.setItem(KEYPAD_SESSION_KEY, String(nextExpanded));
+    } catch {
+      // The keypad remains usable when session storage is unavailable.
+    }
   }
 
   function toggleTool(tool: Exclude<OpenTool, null>): void {
@@ -1068,15 +1179,86 @@ export function PlayerShell() {
       displayResolution.width / displayResolution.height,
   } as CSSProperties;
 
+  const renderToolButtons = () => (
+    <div className="tool-buttons">
+      <ToolButton
+        icon="cartridge"
+        label="Load game"
+        active={openTool === "upload"}
+        onClick={() => toggleTool("upload")}
+      />
+      <ToolButton
+        icon="save"
+        label="Saved game"
+        active={openTool === "saved"}
+        indicator={Boolean(lastGame)}
+        onClick={() => toggleTool("saved")}
+      />
+      <ToolButton
+        icon={
+          audio.status === "unavailable"
+            ? "audio-off"
+            : audio.muted
+              ? "muted"
+              : audio.status === "ready"
+                ? "audio"
+                : "audio-idle"
+        }
+        label={audioLabel}
+        state={audio.status}
+        disabled={player.state !== "running" || audio.status === "initializing"}
+        pressed={!audioNeedsInitialization ? audio.muted : undefined}
+        onClick={() => {
+          if (audioNeedsInitialization) void initializeAudio();
+          else changeMuted(!audio.muted);
+        }}
+      />
+      <ToolButton
+        icon="controls"
+        label="Controls"
+        active={openTool === "controls"}
+        onClick={() => toggleTool("controls")}
+      />
+      <ToolButton
+        icon="resolution"
+        label="Display size"
+        active={openTool === "resolution"}
+        disabled={!selectedGame}
+        onClick={() => toggleTool("resolution")}
+      />
+      <ToolButton
+        icon="info"
+        label="Game details"
+        active={openTool === "details"}
+        disabled={!selectedGame}
+        onClick={() => toggleTool("details")}
+      />
+      <ToolButton
+        icon="keypad"
+        label={keypadExpanded ? "Hide phone keypad" : "Show phone keypad"}
+        active={keypadExpanded}
+        expanded={keypadExpanded}
+        controls={KEYPAD_ID}
+        onClick={toggleKeypad}
+      />
+    </div>
+  );
+
   const gameStage = (
     <section className="phone-stage" aria-label="PocketByte game display">
       <div
         ref={phone}
-        className="phone"
+        className={`phone${keypadExpanded ? " is-keypad-expanded" : ""}`}
         role="application"
         aria-label="PocketByte Java ME game display. Focus to use keyboard controls."
         tabIndex={0}
         onPointerDown={(event) => {
+          if (
+            event.defaultPrevented
+            || (event.target instanceof Element && event.target.closest("button"))
+          ) {
+            return;
+          }
           event.preventDefault();
           phone.current?.focus();
         }}
@@ -1086,7 +1268,15 @@ export function PlayerShell() {
         onKeyUp={(event) => {
           if (sendKey(event.code, false)) event.preventDefault();
         }}
-        onBlur={releaseKeyboardKeys}
+        onBlur={(event) => {
+          releaseKeyboardKeys();
+          if (
+            !(event.relatedTarget instanceof Node)
+            || !event.currentTarget.contains(event.relatedTarget)
+          ) {
+            releasePointerKeys();
+          }
+        }}
       >
         <div className="screen-bezel">
           <div className="screen-status">
@@ -1105,6 +1295,41 @@ export function PlayerShell() {
             <p className="runtime-label">{player.frameLabel}</p>
           </div>
         </div>
+        <div
+          id={KEYPAD_ID}
+          className="mobile-keypad-shell"
+          aria-hidden={!keypadExpanded}
+        >
+          <div className="mobile-keypad-content">
+            <div className="soft-key-row">
+              {SOFT_KEYS.map((key) => (
+                <KeypadButton
+                  key={key.accessibleName}
+                  keypadKey={key}
+                  disabled={!keypadExpanded || player.state !== "running"}
+                  pressed={pressedPointerCodes.has(key.code)}
+                  onPointerDown={pressPointerKey}
+                  onPointerRelease={releasePointerKey}
+                />
+              ))}
+            </div>
+            <div className="number-key-grid">
+              {NUMBER_KEYS.map((key) => (
+                <KeypadButton
+                  key={key.code}
+                  keypadKey={key}
+                  disabled={!keypadExpanded || player.state !== "running"}
+                  pressed={pressedPointerCodes.has(key.code)}
+                  onPointerDown={pressPointerKey}
+                  onPointerRelease={releasePointerKey}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+        <nav className="tool-rail mobile-tool-rail" aria-label="PocketByte tools">
+          {renderToolButtons()}
+        </nav>
       </div>
       <div className="stage-footer">
         <span>{selectedGame?.review.suiteName ?? selectedGame?.sourceFileName ?? "No cartridge"}</span>
@@ -1125,65 +1350,12 @@ export function PlayerShell() {
   return (
     <main className="player-shell" style={playerShellStyle}>
       {gameStage}
-      <nav className="tool-rail" aria-label="PocketByte tools">
+      <nav className="tool-rail desktop-tool-rail" aria-label="PocketByte tools">
         <div className="device-mark" aria-label="PocketByte local Java ME player">
           <span>Pocket<wbr />Byte</span>
           <small>Local Java ME player</small>
         </div>
-        <div className="tool-buttons">
-          <ToolButton
-            icon="cartridge"
-            label="Load game"
-            active={openTool === "upload"}
-            onClick={() => toggleTool("upload")}
-          />
-          <ToolButton
-            icon="save"
-            label="Saved game"
-            active={openTool === "saved"}
-            indicator={Boolean(lastGame)}
-            onClick={() => toggleTool("saved")}
-          />
-          <ToolButton
-            icon={
-              audio.status === "unavailable"
-                ? "audio-off"
-                : audio.muted
-                  ? "muted"
-                  : audio.status === "ready"
-                    ? "audio"
-                    : "audio-idle"
-            }
-            label={audioLabel}
-            state={audio.status}
-            disabled={player.state !== "running" || audio.status === "initializing"}
-            pressed={!audioNeedsInitialization ? audio.muted : undefined}
-            onClick={() => {
-              if (audioNeedsInitialization) void initializeAudio();
-              else changeMuted(!audio.muted);
-            }}
-          />
-          <ToolButton
-            icon="controls"
-            label="Controls"
-            active={openTool === "controls"}
-            onClick={() => toggleTool("controls")}
-          />
-          <ToolButton
-            icon="resolution"
-            label="Display size"
-            active={openTool === "resolution"}
-            disabled={!selectedGame}
-            onClick={() => toggleTool("resolution")}
-          />
-          <ToolButton
-            icon="info"
-            label="Game details"
-            active={openTool === "details"}
-            disabled={!selectedGame}
-            onClick={() => toggleTool("details")}
-          />
-        </div>
+        {renderToolButtons()}
       </nav>
 
       {openTool && (
@@ -1340,6 +1512,7 @@ type IconName =
   | "close"
   | "controls"
   | "info"
+  | "keypad"
   | "muted"
   | "resolution"
   | "save";
@@ -1351,6 +1524,8 @@ function ToolButton({
   indicator = false,
   disabled = false,
   pressed,
+  expanded,
+  controls,
   state,
   onClick,
 }: {
@@ -1360,6 +1535,8 @@ function ToolButton({
   indicator?: boolean;
   disabled?: boolean;
   pressed?: boolean;
+  expanded?: boolean;
+  controls?: string;
   state?: AudioView["status"];
   onClick: () => void;
 }) {
@@ -1368,9 +1545,11 @@ function ToolButton({
       className={`tool-button${active ? " is-active" : ""}`}
       type="button"
       aria-label={label}
-      aria-expanded={active || undefined}
+      aria-expanded={expanded ?? (active || undefined)}
+      aria-controls={controls}
       aria-pressed={pressed}
       aria-disabled={disabled || undefined}
+      data-tool={icon}
       data-tooltip={label}
       data-tool-state={state}
       onClick={() => {
@@ -1415,6 +1594,10 @@ function Icon({ name }: { name: IconName }) {
         <path {...common} d="M7.5 8h9a4 4 0 013.8 2.8l1.1 3.7a2.7 2.7 0 01-4.3 2.8l-2.2-1.8H9.1l-2.2 1.8a2.7 2.7 0 01-4.3-2.8l1.1-3.7A4 4 0 017.5 8z" />
         <path {...common} d="M7.5 11v4M5.5 13h4M16.5 11.5v.1M18.5 14v.1" />
       </>}
+      {name === "keypad" && <>
+        <rect {...common} x="5" y="3.5" width="14" height="17" rx="1" />
+        <path {...common} d="M8 7h.1M12 7h.1M16 7h.1M8 11.5h.1M12 11.5h.1M16 11.5h.1M8 16h.1M12 16h.1M16 16h.1" />
+      </>}
       {(name === "audio" || name === "audio-idle" || name === "muted" || name === "audio-off") && <>
         <path {...common} d="M4 10h4l4-4v12l-4-4H4z" />
         {name === "audio" && <path {...common} d="M15 9a4 4 0 010 6M17.5 6.5a7.5 7.5 0 010 11" />}
@@ -1438,10 +1621,51 @@ const TOOL_LABELS: Record<IconName, string> = {
   close: "CLOSE",
   controls: "CTRL",
   info: "INFO",
+  keypad: "KEYS",
   muted: "AUDIO",
   resolution: "SIZE",
   save: "SAVE",
 };
+
+function KeypadButton({
+  keypadKey,
+  disabled,
+  pressed,
+  onPointerDown,
+  onPointerRelease,
+}: {
+  keypadKey: KeypadKey;
+  disabled: boolean;
+  pressed: boolean;
+  onPointerDown: (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    code: string,
+  ) => void;
+  onPointerRelease: (pointerId: number) => void;
+}) {
+  const release = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    onPointerRelease(event.pointerId);
+  };
+
+  return (
+    <button
+      className={`keypad-key${pressed ? " is-pressed" : ""}`}
+      type="button"
+      aria-label={keypadKey.accessibleName}
+      aria-pressed={pressed}
+      disabled={disabled}
+      onPointerDown={(event) => onPointerDown(event, keypadKey.code)}
+      onPointerUp={release}
+      onPointerCancel={release}
+      onLostPointerCapture={release}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <span>{keypadKey.label}</span>
+      {keypadKey.mark && <small aria-hidden="true">{keypadKey.mark}</small>}
+    </button>
+  );
+}
 
 function toolTitle(tool: Exclude<OpenTool, null>): string {
   if (tool === "upload") return "Load game";
