@@ -29,10 +29,55 @@
       let resolutionObservationTimer = null;
       let removeObservationInputListeners = null;
       let launchHadUserInput = false;
+      let rangeWorkerReady = null;
       const post = (type, details = {}) => parent.postMessage({ source: FRAME_SOURCE, session, type, ...details }, location.origin);
 
       const engine = document.querySelector("#engine");
       const status = document.querySelector("#status");
+
+      const waitForServiceWorkerControl = (registration) => {
+        if (navigator.serviceWorker.controller) return Promise.resolve();
+
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            navigator.serviceWorker.removeEventListener(
+              "controllerchange",
+              handleControllerChange,
+            );
+            reject(new Error("The runtime cache could not start. Reload and try again."));
+          }, 10_000);
+          const handleControllerChange = () => {
+            if (!navigator.serviceWorker.controller) return;
+            clearTimeout(timeout);
+            navigator.serviceWorker.removeEventListener(
+              "controllerchange",
+              handleControllerChange,
+            );
+            resolve();
+          };
+          navigator.serviceWorker.addEventListener(
+            "controllerchange",
+            handleControllerChange,
+          );
+          registration.active?.postMessage("claim-clients");
+        });
+      };
+
+      const ensureRangeWorker = () => {
+        if (rangeWorkerReady) return rangeWorkerReady;
+        rangeWorkerReady = (async () => {
+          if (!("serviceWorker" in navigator)) {
+            throw new Error("This browser cannot prepare the runtime cache.");
+          }
+          const registration = await navigator.serviceWorker.register(
+            "/range-service-worker.js",
+            { scope: "/" },
+          );
+          await navigator.serviceWorker.ready;
+          await waitForServiceWorkerControl(registration);
+        })();
+        return rangeWorkerReady;
+      };
 
       window.handsetAudio = {
         initialize() {
@@ -404,7 +449,16 @@
         const command = event.data;
         if (!command || command.source !== SHELL_SOURCE || typeof command.session !== "string") return;
         session = command.session;
-        if (command.type === "initialize") post("runtime-ready");
+        if (command.type === "initialize") {
+          void ensureRangeWorker()
+            .then(() => post("runtime-ready"))
+            .catch((error) => post("failed", {
+              stage: "runtime-preparation",
+              message: error instanceof Error
+                ? error.message
+                : "The runtime cache could not start.",
+            }));
+        }
         if (command.type === "launch" && command.fixture?.id === "smoke-fixture") {
           fixture = command.fixture;
           post("launching", { fixtureName: fixture.name });
