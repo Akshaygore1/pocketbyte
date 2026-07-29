@@ -1965,65 +1965,36 @@ function midletSelection(
   };
 }
 
-const REPORT_RUNTIME_ERROR =
-  " If it still fails, report the stage and error shown above.";
-
-const RUNTIME_FAILURE_PRESENTATION: Record<
-  RuntimeFailureStage,
-  { label: string; guidance: string | null }
-> = {
-  "runtime-preparation": {
-    label: "Runtime preparation failed",
-    guidance:
-      "On iPhone, retry in a normal, non-private Safari tab and close other browser tabs."
-      + REPORT_RUNTIME_ERROR,
-  },
-  "runtime-loader": {
-    label: "CheerpJ loader failed",
-    guidance:
-      "Check the connection, temporarily disable content blockers or VPN filtering, and reload."
-      + REPORT_RUNTIME_ERROR,
-  },
-  "cheerpj-initialization": {
-    label: "CheerpJ initialization failed",
-    guidance:
-      "On iPhone, retry in a normal, non-private Safari tab, close other browser tabs, and reload."
-      + REPORT_RUNTIME_ERROR,
-  },
-  "runtime-library-loading": {
-    label: "FreeJ2ME runtime loading failed",
-    guidance:
-      "Retry on a stable connection. If filtering is enabled, temporarily disable the content blocker or VPN and reload."
-      + REPORT_RUNTIME_ERROR,
-  },
-  "runtime-loading": {
-    label: "Runtime loading failed",
-    guidance:
-      "On iPhone, retry in a normal, non-private Safari tab on a stable connection."
-      + REPORT_RUNTIME_ERROR,
-  },
-  "midlet-discovery": {
-    label: "MIDlet discovery failed",
-    guidance: null,
-  },
-  launching: {
-    label: "Launch timed out",
-    guidance: null,
-  },
-  execution: {
-    label: "MIDlet execution failed",
-    guidance: null,
-  },
-  "game-data-operation": {
-    label: "Game data operation failed",
-    guidance: null,
-  },
-};
-
 function failureStageLabel(stage: RuntimeFailureStage): string {
-  return RUNTIME_FAILURE_PRESENTATION[stage].label;
+  switch (stage) {
+    case "runtime-preparation":
+      return "Runtime preparation failed";
+    case "runtime-loader":
+      return "CheerpJ loader failed";
+    case "cheerpj-initialization":
+      return "CheerpJ initialization failed";
+    case "runtime-library-loading":
+      return "FreeJ2ME runtime loading failed";
+    case "midlet-discovery":
+      return "MIDlet discovery failed";
+    case "execution":
+      return "MIDlet execution failed";
+    case "game-data-operation":
+      return "Game data operation failed";
+  }
 }
 
 function runtimeFailureGuidance(stage: RuntimeFailureStage): string | null {
-  return RUNTIME_FAILURE_PRESENTATION[stage].guidance;
+  if (
+    stage !== "runtime-preparation"
+    && stage !== "runtime-loader"
+    && stage !== "cheerpj-initialization"
+    && stage !== "runtime-library-loading"
+  ) {
+    return null;
+  }
+
+  return "On iPhone, retry in a normal Safari tab. If it still fails, "
+    + "temporarily disable content blockers or VPN filtering, close other "
+    + "browser tabs, and reload on a stable connection.";
 }
