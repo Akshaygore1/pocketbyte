@@ -89,10 +89,11 @@ npx serve -u web
 ### Cloudflare Pages
 
 Cloudflare Pages serves static asset range requests as complete `200` responses.
-PocketByte includes `functions/freej2me-web.jar.js` to provide the `206 Partial
-Content` responses CheerpJ requires for the bundled runtime JAR. Deploy the
-project through a Pages workflow that includes Functions, then verify the live
-response:
+PocketByte includes `web/_worker.js` and a narrowly scoped `web/_routes.json` to
+provide the `206 Partial Content` responses CheerpJ requires for the bundled
+runtime JAR. Vite copies both files into `dist`, so they work with Git,
+Wrangler, and dashboard Direct Upload deployments. After deploying, verify the
+live response:
 
 ```
 curl -I -H 'Range: bytes=0-1023' https://your-site.example/freej2me-web.jar
