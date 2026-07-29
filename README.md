@@ -89,17 +89,11 @@ npx serve -u web
 ### Cloudflare Pages
 
 Cloudflare Pages serves static asset range requests as complete `200` responses.
-PocketByte includes `web/range-service-worker.js`, which caches the bundled
-runtime JAR in the browser and provides the `206 Partial Content` responses
-CheerpJ requires. This keeps the deployment fully static and works with Git,
-Wrangler, and dashboard Direct Upload deployments.
-
-Because the byte ranges are provided inside the browser, command-line requests
-to the deployed JAR will continue to receive `200`. Verify on the site by
-launching a game; runtime preparation waits until the service worker controls
-the emulator frame before starting CheerpJ.
-
-On a server with native range support, you can still verify the live response:
+PocketByte includes `web/_worker.js` and a narrowly scoped `web/_routes.json` to
+provide the `206 Partial Content` responses CheerpJ requires for the bundled
+runtime JAR. Vite copies both files into `dist`, so they work with Git,
+Wrangler, and dashboard Direct Upload deployments. After deploying, verify the
+live response:
 
 ```
 curl -I -H 'Range: bytes=0-1023' https://your-site.example/freej2me-web.jar

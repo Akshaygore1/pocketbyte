@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "include": ["/freej2me-web.jar"],
+  "exclude": []
+}
