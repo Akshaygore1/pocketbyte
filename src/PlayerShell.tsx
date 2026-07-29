@@ -12,6 +12,7 @@ import {
   type GameRotation,
   type LogicalResolution,
   type MidletLaunch,
+  type RuntimeFailureStage,
   type PlayerLifecycleState,
   type RuntimeLifecycleEvent,
 } from "./runtime/runtimeAdapter";
@@ -39,6 +40,7 @@ interface PlayerView {
   state: PlayerLifecycleState;
   frameLabel: string;
   runtimeError: string | null;
+  runtimeGuidance: string | null;
 }
 
 interface SelectedGame {
@@ -153,7 +155,12 @@ function reduceRuntimeEvent(
   switch (event.type) {
     case "runtime-ready":
       return current.state === "loading-runtime"
-        ? { ...current, state: "empty", runtimeError: null }
+        ? {
+            ...current,
+            state: "empty",
+            runtimeError: null,
+            runtimeGuidance: null,
+          }
         : current;
     case "runtime-loading":
       return current.state === "ready"
@@ -161,6 +168,7 @@ function reduceRuntimeEvent(
             state: "loading-runtime",
             frameLabel: `Loading the runtime for ${event.fixtureName}…`,
             runtimeError: null,
+            runtimeGuidance: null,
           }
         : current;
     case "launching":
@@ -177,11 +185,17 @@ function reduceRuntimeEvent(
             state: "running",
             frameLabel: event.fixtureName,
             runtimeError: null,
+            runtimeGuidance: null,
           }
         : current;
     case "restarting":
       return current.state === "running" || current.state === "restarting"
-        ? { ...current, state: "restarting", runtimeError: null }
+        ? {
+            ...current,
+            state: "restarting",
+            runtimeError: null,
+            runtimeGuidance: null,
+          }
         : current;
     case "failed":
       return ["empty", "loading-runtime", "launching", "running", "restarting"]
@@ -190,6 +204,7 @@ function reduceRuntimeEvent(
             state: "failed",
             frameLabel: event.message,
             runtimeError: `${failureStageLabel(event.stage)}: ${event.message}`,
+            runtimeGuidance: runtimeFailureGuidance(event.stage),
           }
         : current;
     case "audio-initializing":
@@ -224,6 +239,7 @@ export function PlayerShell() {
     state: "loading-runtime",
     frameLabel: "Loading runtime frame…",
     runtimeError: null,
+    runtimeGuidance: null,
   });
   const [selectedGame, setSelectedGame] = useState<SelectedGame | null>(null);
   const [lastGame, setLastGame] = useState<CachedGame<JarReview> | null>(null);
@@ -391,6 +407,7 @@ export function PlayerShell() {
         ...current,
         state: "failed",
         runtimeError: null,
+        runtimeGuidance: null,
       }));
       return;
     }
@@ -404,6 +421,7 @@ export function PlayerShell() {
         ...current,
         state: "failed",
         runtimeError: null,
+        runtimeGuidance: null,
       }));
       return;
     }
@@ -429,6 +447,7 @@ export function PlayerShell() {
       ...current,
       state: "ready",
       runtimeError: null,
+      runtimeGuidance: null,
     }));
   }
 
@@ -632,6 +651,7 @@ export function PlayerShell() {
         ...current,
         state: "ready",
         runtimeError: null,
+        runtimeGuidance: null,
       }));
       resumeInProgress.current = false;
       setLastGameBusy(false);
@@ -682,12 +702,14 @@ export function PlayerShell() {
           state: "empty",
           frameLabel: "Choose a game to begin.",
           runtimeError: null,
+          runtimeGuidance: null,
         });
       } else {
         setPlayer((current) => ({
           ...current,
           state: selectedGame ? "ready" : "empty",
           runtimeError: null,
+          runtimeGuidance: null,
         }));
       }
     } catch {
@@ -733,6 +755,7 @@ export function PlayerShell() {
           ? displayGameName(lastGame)
           : "Choose a game to begin.",
         runtimeError: null,
+        runtimeGuidance: null,
       }));
     } catch {
       setValidationError(
@@ -760,6 +783,7 @@ export function PlayerShell() {
         state: "loading-runtime",
         frameLabel,
         runtimeError: null,
+        runtimeGuidance: null,
       });
     }
   }
@@ -1337,7 +1361,14 @@ export function PlayerShell() {
           {audio.notice ?? "Ready for local play"}
         </span>
       </div>
-      {player.runtimeError && <p className="runtime-alert" role="alert">{player.runtimeError}</p>}
+      {player.runtimeError && (
+        <div className="runtime-alert" role="alert">
+          <p>{player.runtimeError}</p>
+          {player.runtimeGuidance && (
+            <p className="runtime-guidance">{player.runtimeGuidance}</p>
+          )}
+        </div>
+      )}
       {(storageNotice || validationError) && !openTool && (
         <div className="stage-messages">
           {storageNotice && <p className="storage-notice" role="status">{storageNotice}</p>}
@@ -1934,15 +1965,36 @@ function midletSelection(
   };
 }
 
-function failureStageLabel(stage: string): string {
+function failureStageLabel(stage: RuntimeFailureStage): string {
   switch (stage) {
-    case "runtime-loading":
-      return "Runtime loading failed";
+    case "runtime-preparation":
+      return "Runtime preparation failed";
+    case "runtime-loader":
+      return "CheerpJ loader failed";
+    case "cheerpj-initialization":
+      return "CheerpJ initialization failed";
+    case "runtime-library-loading":
+      return "FreeJ2ME runtime loading failed";
     case "midlet-discovery":
       return "MIDlet discovery failed";
     case "execution":
       return "MIDlet execution failed";
-    default:
-      return "Launch failed";
+    case "game-data-operation":
+      return "Game data operation failed";
   }
+}
+
+function runtimeFailureGuidance(stage: RuntimeFailureStage): string | null {
+  if (
+    stage !== "runtime-preparation"
+    && stage !== "runtime-loader"
+    && stage !== "cheerpj-initialization"
+    && stage !== "runtime-library-loading"
+  ) {
+    return null;
+  }
+
+  return "On iPhone, retry in a normal Safari tab. If it still fails, "
+    + "temporarily disable content blockers or VPN filtering, close other "
+    + "browser tabs, and reload on a stable connection.";
 }

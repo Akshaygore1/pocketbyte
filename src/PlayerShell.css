@@ -883,6 +883,16 @@ select:focus-visible,
   font-size: 0.65rem;
 }
 
+.runtime-alert p {
+  margin: 0;
+}
+
+.runtime-alert .runtime-guidance {
+  margin-top: 0.45rem;
+  color: var(--color-text);
+  line-height: 1.45;
+}
+
 .stage-messages {
   width: var(--stage-width);
 }

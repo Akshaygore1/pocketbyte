@@ -13,6 +13,15 @@ export interface FixtureLaunch {
   name: string;
 }
 
+export type RuntimeFailureStage =
+  | "runtime-preparation"
+  | "runtime-loader"
+  | "cheerpj-initialization"
+  | "runtime-library-loading"
+  | "midlet-discovery"
+  | "execution"
+  | "game-data-operation";
+
 export type RuntimeLifecycleEvent =
   | { type: "runtime-ready" }
   | { type: "runtime-loading"; fixtureName: string }
@@ -27,7 +36,7 @@ export type RuntimeLifecycleEvent =
       identity: string;
       resolution: LogicalResolution;
     }
-  | { type: "failed"; stage: string; message: string }
+  | { type: "failed"; stage: RuntimeFailureStage; message: string }
   | { type: "diagnostics"; message: string }
   | { type: "teardown" };
 
@@ -145,6 +154,18 @@ function stringField(value: Record<string, unknown>, field: string): string | nu
   return typeof value[field] === "string" ? value[field] : null;
 }
 
+function isRuntimeFailureStage(value: string): value is RuntimeFailureStage {
+  return [
+    "runtime-preparation",
+    "runtime-loader",
+    "cheerpj-initialization",
+    "runtime-library-loading",
+    "midlet-discovery",
+    "execution",
+    "game-data-operation",
+  ].includes(value);
+}
+
 function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
   if (!isRecord(value) || value.source !== FRAME_SOURCE || typeof value.type !== "string") {
     return null;
@@ -192,7 +213,9 @@ function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
     case "failed": {
       const stage = stringField(value, "stage");
       const message = stringField(value, "message");
-      return stage && message ? { type: "failed", stage, message } : null;
+      return stage && isRuntimeFailureStage(stage) && message
+        ? { type: "failed", stage, message }
+        : null;
     }
     case "diagnostics": {
       const message = stringField(value, "message");
