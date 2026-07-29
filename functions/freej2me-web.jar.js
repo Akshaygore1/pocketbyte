@@ -1,5 +1,4 @@
 const RANGE_PATTERN = /^bytes=(\d*)-(\d*)$/;
-const RUNTIME_JAR_PATH = "/freej2me-web.jar";
 
 function parseByteRange(value, size) {
   if (!value || value.includes(",")) return null;
@@ -41,7 +40,7 @@ function responseHeaders(source) {
   return headers;
 }
 
-async function serveRuntimeJar(request, assets) {
+export async function onRequest({ request, env }) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method Not Allowed", {
       status: 405,
@@ -56,7 +55,7 @@ async function serveRuntimeJar(request, assets) {
     method: "GET",
     headers: assetHeaders,
   });
-  const assetResponse = await assets.fetch(assetRequest);
+  const assetResponse = await env.ASSETS.fetch(assetRequest);
   if (!assetResponse.ok) return assetResponse;
 
   const rangeHeader = request.headers.get("Range");
@@ -99,13 +98,3 @@ async function serveRuntimeJar(request, assets) {
     { status: 206, headers },
   );
 }
-
-export default {
-  fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname === RUNTIME_JAR_PATH) {
-      return serveRuntimeJar(request, env.ASSETS);
-    }
-    return env.ASSETS.fetch(request);
-  },
-};
