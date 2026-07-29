@@ -242,7 +242,7 @@ async function init() {
             }, location.origin);
         }
     };
-    let failureStage = "runtime-preparation";
+    let failureStage = "runtime-loading";
     let audioMuted = sp.get("muted") === "1";
     let audioFixtureStarted = false;
 
@@ -306,17 +306,6 @@ async function init() {
             },
         };
 
-        failureStage = "runtime-loader";
-        if (
-            typeof cheerpjInit !== "function"
-            || typeof cheerpjRunLibrary !== "function"
-        ) {
-            throw new Error(
-                "The CheerpJ loader is unavailable. Check content blockers, VPN filtering, and your connection, then reload.",
-            );
-        }
-
-        failureStage = "cheerpj-initialization";
         await cheerpjInit({
         enableDebug: false,
         natives: {
@@ -390,7 +379,6 @@ async function init() {
 
         document.getElementById("loading").textContent = "Loading...";
 
-        failureStage = "runtime-library-loading";
         const lib = await cheerpjRunLibrary(cheerpjWebRoot+"/freej2me-web.jar");
 
         const operation = sp.get("operation");
@@ -478,51 +466,22 @@ async function init() {
 
         failureStage = "execution";
         notifyHost("launching");
-        FreeJ2ME.main(args).catch(error => {
+        FreeJ2ME.main(args).catch(e => {
+            e.printStackTrace();
             document.getElementById('loading').textContent = 'Crash :(';
             notifyHost("failed", {
                 stage: "execution",
-                message: runtimeFailureMessage(error),
+                message: `${sp.get('name') || "The MIDlet"} could not start.`,
             });
         });
     } catch (error) {
         document.getElementById('loading').textContent = 'Launch failed';
         notifyHost("failed", {
             stage: failureStage,
-            message: runtimeFailureMessage(error),
+            message: error instanceof Error ? error.message : "The launch failed.",
         });
     }
 
-}
-
-function runtimeFailureMessage(error) {
-    const clean = value => typeof value === "string"
-        ? value.replace(/\s+/g, " ").trim().slice(0, 500)
-        : "";
-
-    try {
-        if (typeof error === "string") {
-            return clean(error) || "The runtime rejected the launch without details.";
-        }
-
-        if (error && typeof error === "object") {
-            const name = clean(error.name);
-            const message = clean(error.message);
-            const code = typeof error.code === "string" || typeof error.code === "number"
-                ? clean(String(error.code))
-                : "";
-            const detail = message || code;
-
-            if (name && detail && !detail.startsWith(name)) {
-                return `${name}: ${detail}`.slice(0, 500);
-            }
-            if (detail || name) return detail || name;
-        }
-    } catch {
-        // Some runtime rejection objects expose throwing property accessors.
-    }
-
-    return "The runtime rejected the launch without details.";
 }
 
 init();
