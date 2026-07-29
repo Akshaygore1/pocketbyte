@@ -1,7 +1,11 @@
 const CACHE_PREFIX = "pocketbyte-runtime-range-";
-const CACHE_NAME = `${CACHE_PREFIX}v1-972381`;
+// Update this digest whenever web/freej2me-web.jar changes.
+const RUNTIME_JAR_VERSION =
+  "sha256-08ffc41af9e1bf815012a03d87e0af0e894eb98181f42b2302a2febf12b343eb";
+const CACHE_NAME = `${CACHE_PREFIX}${RUNTIME_JAR_VERSION}`;
 const RUNTIME_JAR_PATH = "/freej2me-web.jar";
 const RANGE_PATTERN = /^bytes=(\d*)-(\d*)$/;
+let runtimeJarLoad = null;
 
 function parseByteRange(value, size) {
   if (!value || value.includes(",")) return null;
@@ -42,12 +46,23 @@ async function readRuntimeJar(request) {
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
 
-  const headers = new Headers(request.headers);
-  headers.delete("Range");
-  headers.delete("If-Range");
-  const response = await fetch(new Request(cacheKey, { headers }));
-  if (response.ok) await cache.put(cacheKey, response.clone());
-  return response;
+  if (!runtimeJarLoad) {
+    runtimeJarLoad = (async () => {
+      const newlyCached = await cache.match(cacheKey);
+      if (newlyCached) return newlyCached;
+
+      const headers = new Headers(request.headers);
+      headers.delete("Range");
+      headers.delete("If-Range");
+      const response = await fetch(new Request(cacheKey, { headers }));
+      if (response.ok) await cache.put(cacheKey, response.clone());
+      return response;
+    })().finally(() => {
+      runtimeJarLoad = null;
+    });
+  }
+
+  return (await runtimeJarLoad).clone();
 }
 
 function runtimeHeaders(source) {
@@ -94,7 +109,9 @@ async function serveRuntimeJar(request) {
   });
 }
 
-self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("install", (event) => {
+  event.waitUntil(self.skipWaiting());
+});
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
