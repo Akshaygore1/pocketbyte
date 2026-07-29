@@ -13,14 +13,23 @@ export interface FixtureLaunch {
   name: string;
 }
 
-export type RuntimeFailureStage =
-  | "runtime-preparation"
-  | "runtime-loader"
-  | "cheerpj-initialization"
-  | "runtime-library-loading"
-  | "midlet-discovery"
-  | "execution"
-  | "game-data-operation";
+const RUNTIME_FAILURE_STAGES = [
+  "runtime-preparation",
+  "runtime-loader",
+  "cheerpj-initialization",
+  "runtime-library-loading",
+  "runtime-loading",
+  "midlet-discovery",
+  "launching",
+  "execution",
+  "game-data-operation",
+] as const;
+
+export type RuntimeFailureStage = typeof RUNTIME_FAILURE_STAGES[number];
+
+const RUNTIME_FAILURE_STAGE_SET: ReadonlySet<string> = new Set(
+  RUNTIME_FAILURE_STAGES,
+);
 
 export type RuntimeLifecycleEvent =
   | { type: "runtime-ready" }
@@ -155,15 +164,7 @@ function stringField(value: Record<string, unknown>, field: string): string | nu
 }
 
 function isRuntimeFailureStage(value: string): value is RuntimeFailureStage {
-  return [
-    "runtime-preparation",
-    "runtime-loader",
-    "cheerpj-initialization",
-    "runtime-library-loading",
-    "midlet-discovery",
-    "execution",
-    "game-data-operation",
-  ].includes(value);
+  return RUNTIME_FAILURE_STAGE_SET.has(value);
 }
 
 function parseFrameEvent(value: unknown): RuntimeLifecycleEvent | null {
