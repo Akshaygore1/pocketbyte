@@ -307,7 +307,10 @@ async function init() {
         };
 
         failureStage = "runtime-loader";
-        if (typeof cheerpjInit !== "function") {
+        if (
+            typeof cheerpjInit !== "function"
+            || typeof cheerpjRunLibrary !== "function"
+        ) {
             throw new Error(
                 "The CheerpJ loader is unavailable. Check content blockers, VPN filtering, and your connection, then reload.",
             );
@@ -388,11 +391,6 @@ async function init() {
         document.getElementById("loading").textContent = "Loading...";
 
         failureStage = "runtime-library-loading";
-        if (typeof cheerpjRunLibrary !== "function") {
-            throw new Error(
-                "CheerpJ initialized without exposing its library API. Reload and try again.",
-            );
-        }
         const lib = await cheerpjRunLibrary(cheerpjWebRoot+"/freej2me-web.jar");
 
         const operation = sp.get("operation");
